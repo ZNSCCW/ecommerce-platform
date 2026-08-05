@@ -110,3 +110,13 @@ volumes:
   mysql-data:
   redis-data:
   es-data:
+
+volumes:
+  mysql-data:
+  redis-data:
+  es-data:
+
+volumes:
+  mysql-data:
+  redis-data:
+  es-data:

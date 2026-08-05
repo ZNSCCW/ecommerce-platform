@@ -23,6 +23,7 @@
     <modules>
         <module>common</module>
         <module>gateway</module>
+        <module>ecommerce-admin</module>
         <module>service-user</module>
         <module>service-product</module>
         <module>service-order</module>
@@ -37,6 +38,9 @@
         <!-- Spring Cloud & Alibaba -->
         <spring-cloud.version>2023.0.1</spring-cloud.version>
         <spring-cloud-alibaba.version>2023.0.1.0</spring-cloud-alibaba.version>
+
+        <!-- Spring Boot Admin -->
+        <spring-boot-admin.version>3.2.3</spring-boot-admin.version>
 
         <!-- 核心第三方依赖 -->
         <mybatis-plus.version>3.5.5</mybatis-plus.version>
@@ -101,6 +105,15 @@
                 <groupId>cn.hutool</groupId>
                 <artifactId>hutool-all</artifactId>
                 <version>${hutool.version}</version>
+            </dependency>
+
+            <!-- Spring Boot Admin -->
+            <dependency>
+                <groupId>de.codecentric</groupId>
+                <artifactId>spring-boot-admin-dependencies</artifactId>
+                <version>${spring-boot-admin.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
 
             <!-- JWT -->

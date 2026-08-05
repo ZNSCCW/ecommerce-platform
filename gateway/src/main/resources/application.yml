@@ -1,6 +1,10 @@
 spring:
   application:
     name: gateway
+  boot:
+    admin:
+      client:
+        url: http://localhost:8090
 
   cloud:
     nacos:

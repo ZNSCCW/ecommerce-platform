@@ -1,0 +1,16 @@
+spring:
+  application:
+    name: ecommerce-admin
+
+  boot:
+    admin:
+      ui:
+        title: 电商平台管理后台
+
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+
+server:
+  port: 8090
