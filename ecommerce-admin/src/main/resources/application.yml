@@ -18,6 +18,7 @@ spring:
     nacos:
       discovery:
         server-addr: localhost:8848
+        ip: 127.0.0.1
 
 server:
   port: 8090

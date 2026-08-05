@@ -10,6 +10,7 @@ spring:
     nacos:
       discovery:
         server-addr: localhost:8848
+        ip: 127.0.0.1
     sentinel:
       transport:
         dashboard: localhost:8080
@@ -21,40 +22,30 @@ spring:
           uri: lb://service-user
           predicates:
             - Path=/api/user/**
-          filters:
-            - StripPrefix=1
 
         # 商品服务
         - id: service-product
           uri: lb://service-product
           predicates:
             - Path=/api/product/**
-          filters:
-            - StripPrefix=1
 
         # 订单服务
         - id: service-order
           uri: lb://service-order
           predicates:
             - Path=/api/order/**
-          filters:
-            - StripPrefix=1
 
         # 秒杀服务
         - id: service-seckill
           uri: lb://service-seckill
           predicates:
             - Path=/api/seckill/**
-          filters:
-            - StripPrefix=1
 
         # 支付服务
         - id: service-payment
           uri: lb://service-payment
           predicates:
             - Path=/api/payment/**
-          filters:
-            - StripPrefix=1
 
       # 全局跨域配置
       globalcors:
