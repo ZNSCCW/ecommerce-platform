@@ -79,6 +79,18 @@ public class ProductController {
         return Result.success();
     }
 
+    // ==================== 库存操作（Feign 内部调用） ====================
+
+    @PutMapping("/sku/stock/deduct")
+    public Result<Boolean> deductStock(@RequestParam Long skuId, @RequestParam Integer quantity) {
+        return Result.success(productService.deductStock(skuId, quantity));
+    }
+
+    @PutMapping("/sku/stock/restore")
+    public Result<Boolean> restoreStock(@RequestParam Long skuId, @RequestParam Integer quantity) {
+        return Result.success(productService.restoreStock(skuId, quantity));
+    }
+
     // ==================== 分类 ====================
 
     @GetMapping("/category/tree")
