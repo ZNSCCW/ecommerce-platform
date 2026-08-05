@@ -1,0 +1,112 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ecommerce-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - ecommerce-net
+
+  redis:
+    image: redis:7.0
+    container_name: ecommerce-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - ecommerce-net
+
+  nacos:
+    image: nacos/nacos-server:v2.3.0
+    container_name: ecommerce-nacos
+    environment:
+      MODE: standalone
+      JVM_XMS: 256m
+      JVM_XMX: 512m
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    networks:
+      - ecommerce-net
+
+  rmq-namesrv:
+    image: apache/rocketmq:5.1.4
+    container_name: ecommerce-rocketmq-namesrv
+    environment:
+      JAVA_OPT_EXT: -server -Xms256m -Xmx512m
+    command: sh mqnamesrv
+    ports:
+      - "9876:9876"
+    networks:
+      - ecommerce-net
+
+  rmq-broker:
+    image: apache/rocketmq:5.1.4
+    container_name: ecommerce-rocketmq-broker
+    depends_on:
+      - rmq-namesrv
+    environment:
+      NAMESRV_ADDR: rmq-namesrv:9876
+      JAVA_OPT_EXT: -server -Xms256m -Xmx512m
+    command: sh mqbroker -c /home/rocketmq/conf/broker.conf
+    volumes:
+      - ./rocketmq/broker.conf:/home/rocketmq/conf/broker.conf
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+    networks:
+      - ecommerce-net
+
+  rmq-dashboard:
+    image: apacherocketmq/rocketmq-dashboard:latest
+    container_name: ecommerce-rocketmq-dashboard
+    depends_on:
+      - rmq-namesrv
+    environment:
+      JAVA_OPTS: -Drocketmq.namesrv.addr=rmq-namesrv:9876
+    ports:
+      - "8088:8080"
+    networks:
+      - ecommerce-net
+
+  elasticsearch:
+    image: elasticsearch:7.17.18
+    container_name: ecommerce-es
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - ecommerce-net
+
+  kibana:
+    image: kibana:7.17.18
+    container_name: ecommerce-kibana
+    depends_on:
+      - elasticsearch
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    networks:
+      - ecommerce-net
+
+networks:
+  ecommerce-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  redis-data:
+  es-data:
