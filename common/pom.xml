@@ -45,9 +45,15 @@
             <artifactId>hutool-all</artifactId>
         </dependency>
 
+        <!-- Admin 客户端 + Actuator（各服务自动注册到 Admin Server） -->
         <dependency>
             <groupId>de.codecentric</groupId>
             <artifactId>spring-boot-admin-starter-client</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
         <dependency>

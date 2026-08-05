@@ -6,6 +6,13 @@ spring:
     admin:
       ui:
         title: 电商平台管理后台
+      client:
+        url: http://localhost:8090
+
+  security:
+    user:
+      name: admin
+      password: admin123
 
   cloud:
     nacos:
@@ -14,3 +21,13 @@ spring:
 
 server:
   port: 8090
+
+# 暴露所有 Actuator 端点供 Admin 展示
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always
