@@ -21,6 +21,11 @@
         </dependency>
 
         <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-openfeign</artifactId>
         </dependency>
@@ -47,9 +52,31 @@
         </dependency>
 
         <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <dependency>
             <groupId>org.apache.rocketmq</groupId>
             <artifactId>rocketmq-spring-boot-starter</artifactId>
         </dependency>
+
+        <!--
+        NOTE: 集成支付宝时取消注释并添加仓库
+        1. pom.xml 中添加仓库:
+           <repositories>
+               <repository>
+                   <id>alipay</id>
+                   <url>https://maven.aliyun.com/repository/public</url>
+               </repository>
+           </repositories>
+        2. 依赖:
+           <dependency>
+               <groupId>com.alipay.sdk</groupId>
+               <artifactId>alipay-sdk-java</artifactId>
+               <version>4.38.222.ALL</version>
+           </dependency>
+        -->
 
         <dependency>
             <groupId>com.ecommerce</groupId>

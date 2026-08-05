@@ -61,8 +61,13 @@ public class OrderController {
      */
     @PostMapping("/{id}/pay")
     public Result<Void> pay(@PathVariable Long id) {
-        // 内部接口，后续添加签名校验
         orderService.pay(id);
+        return Result.success();
+    }
+
+    @PostMapping("/pay-by-order-no")
+    public Result<Void> payByOrderNo(@RequestParam String orderNo) {
+        orderService.payByOrderNo(orderNo);
         return Result.success();
     }
 }

@@ -89,6 +89,13 @@
                 <version>2.3.0</version>
             </dependency>
 
+            <!-- Alipay SDK -->
+            <dependency>
+                <groupId>com.alipay.sdk</groupId>
+                <artifactId>alipay-sdk-java</artifactId>
+                <version>4.38.222.ALL</version>
+            </dependency>
+
             <!-- Hutool 工具集 -->
             <dependency>
                 <groupId>cn.hutool</groupId>

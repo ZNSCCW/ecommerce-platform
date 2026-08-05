@@ -167,13 +167,16 @@ public class OrderService {
     }
 
     /**
-     * 支付回调
+     * 支付回调（按数据库ID）
      */
     @Transactional
     public void pay(Long orderId) {
         updateStatus(orderId, 1, LocalDateTime.now().toString());
     }
 
+    /**
+     * 支付回调（按订单号，供支付服务 Feign 调用）
+     */
     @Transactional
     public void payByOrderNo(String orderNo) {
         Order order = orderMapper.selectOne(

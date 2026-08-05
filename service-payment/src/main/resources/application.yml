@@ -8,6 +8,11 @@ spring:
     password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
 
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
   cloud:
     nacos:
       discovery:
@@ -28,3 +33,10 @@ rocketmq:
   name-server: localhost:9876
   producer:
     group: payment-producer-group
+
+# 支付配置
+pay:
+  mock-mode: true                    # true=模拟支付模式，集成支付宝时改为 false
+  alipay-app-id: 2021000000000000    # TODO: 替换为沙箱 APPID
+  notify-url: https://your-domain.com/api/payment/notify  # TODO: 替换为外网可访问的回调地址
+  return-url: https://your-domain.com/#/payment/success   # TODO: 替换为前端跳转地址
