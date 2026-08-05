@@ -143,6 +143,17 @@ docker compose ps
 
 ### 3. 启动服务
 
+**方式一：一键启动（推荐）**
+
+```bash
+cd ecommerce-platform
+start-all.bat
+```
+
+会自动编译 + 依次启动所有服务，按任意键关闭全部。
+
+**方式二：逐个启动**
+
 按顺序启动（Nacos 就绪后）：
 
 ```bash
