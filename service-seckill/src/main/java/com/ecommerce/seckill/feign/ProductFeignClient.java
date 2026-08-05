@@ -13,7 +13,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 @FeignClient(name = "service-product", path = "/api/product")
 public interface ProductFeignClient {
 
-    @PutMapping("/sku/stock/deduct")
+    @PutMapping("/internal/sku/stock/deduct")
     Result<Boolean> deductStock(@RequestParam("skuId") Long skuId,
                                  @RequestParam("quantity") Integer quantity);
 }

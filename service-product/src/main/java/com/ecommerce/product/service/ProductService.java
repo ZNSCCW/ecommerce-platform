@@ -146,6 +146,10 @@ public class ProductService {
 
     // ==================== 分类 ====================
 
+    public Sku getSkuById(Long skuId) {
+        return skuMapper.selectById(skuId);
+    }
+
     public List<Category> getCategoryTree() {
         List<Category> all = categoryMapper.selectList(
                 new LambdaQueryWrapper<Category>().orderByAsc(Category::getSort));

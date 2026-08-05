@@ -81,14 +81,22 @@ public class ProductController {
 
     // ==================== 库存操作（Feign 内部调用） ====================
 
-    @PutMapping("/sku/stock/deduct")
+    @PutMapping("/internal/sku/stock/deduct")
     public Result<Boolean> deductStock(@RequestParam Long skuId, @RequestParam Integer quantity) {
         return Result.success(productService.deductStock(skuId, quantity));
     }
 
-    @PutMapping("/sku/stock/restore")
+    @PutMapping("/internal/sku/stock/restore")
     public Result<Boolean> restoreStock(@RequestParam Long skuId, @RequestParam Integer quantity) {
         return Result.success(productService.restoreStock(skuId, quantity));
+    }
+
+    /**
+     * 内部接口：按 ID 查询 SKU（订单服务取真实价格/名称用，依赖内网隔离）
+     */
+    @GetMapping("/internal/sku/{id}")
+    public Result<Sku> getSkuInternal(@PathVariable Long id) {
+        return Result.success(productService.getSkuById(id));
     }
 
     // ==================== 分类 ====================

@@ -105,12 +105,12 @@ public class OrderService {
         order.setStatus(0);
         order.setExpireTime(LocalDateTime.now().plusMinutes(30));
 
-        // 计算金额
+        // 计算金额（价格/名称来自商品服务，杜绝写死）
+        Map<Long, SkuDTO> skuCache = new HashMap<>();
         BigDecimal total = BigDecimal.ZERO;
         for (CreateOrderRequest.OrderItemRequest item : request.getItems()) {
-            BigDecimal unitPrice = BigDecimal.valueOf(100); // TODO: 从商品服务获取价格
-            BigDecimal subtotal = unitPrice.multiply(BigDecimal.valueOf(item.getQuantity()));
-            total = total.add(subtotal);
+            SkuDTO sku = fetchSku(item.getSkuId(), skuCache);
+            total = total.add(sku.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
         }
         order.setTotalAmount(total);
         order.setPayAmount(total);
@@ -119,21 +119,35 @@ public class OrderService {
 
         // 3. 创建订单明细（order已插入，order.getId()可用）
         for (CreateOrderRequest.OrderItemRequest item : request.getItems()) {
-            BigDecimal unitPrice = BigDecimal.valueOf(100); // TODO: 从商品服务获取价格
+            SkuDTO sku = fetchSku(item.getSkuId(), skuCache);
 
             OrderItem orderItem = new OrderItem();
             orderItem.setOrderId(order.getId());
             orderItem.setSkuId(item.getSkuId());
-            orderItem.setSkuName("商品名称");    // TODO: 从商品服务获取
-            orderItem.setSkuImage("");           // TODO: 从商品服务获取
-            orderItem.setPrice(unitPrice);
+            orderItem.setSkuName(sku.getName());
+            orderItem.setSkuImage(sku.getImage());
+            orderItem.setPrice(sku.getPrice());
             orderItem.setQuantity(item.getQuantity());
-            orderItem.setSubtotal(unitPrice.multiply(BigDecimal.valueOf(item.getQuantity())));
+            orderItem.setSubtotal(sku.getPrice().multiply(BigDecimal.valueOf(item.getQuantity())));
             orderItemMapper.insert(orderItem);
         }
 
         // 延迟消息由 createOrder() 在事务外发送，避免重复+幽灵消息
         return buildOrderVO(order);
+    }
+
+    /** 获取 SKU 真实信息（带缓存避免重复远程调用），不存在则抛业务异常 */
+    private SkuDTO fetchSku(Long skuId, Map<Long, SkuDTO> cache) {
+        SkuDTO cached = cache.get(skuId);
+        if (cached != null) {
+            return cached;
+        }
+        Result<SkuDTO> r = productFeignClient.getSku(skuId);
+        if (r == null || r.getData() == null) {
+            throw new BusinessException(ResultCode.PRODUCT_NOT_FOUND);
+        }
+        cache.put(skuId, r.getData());
+        return r.getData();
     }
 
     /**

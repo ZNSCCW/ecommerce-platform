@@ -277,6 +277,8 @@ CREATE TABLE IF NOT EXISTS `t_seckill_order` (
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_order_no` (`order_no`),
+  -- 同一用户同一活动只能秒杀一次（配合 Lua 限购 + Redisson 锁的数据库兜底）
+  UNIQUE KEY `uk_user_activity` (`user_id`, `activity_id`),
   KEY `idx_user_id` (`user_id`),
   KEY `idx_activity_id` (`activity_id`),
   KEY `idx_sku_id` (`sku_id`)

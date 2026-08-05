@@ -13,8 +13,13 @@ import java.util.Date;
  */
 public class JwtUtil {
 
-    /** 项目中请替换为更复杂的密钥，勿硬编码 */
-    private static final String SECRET = "EcommercePlatformSecretKeyForJWT2024MustBe256BitsLong!";
+    /**
+     * 签名密钥：优先从环境变量/系统属性读取（生产必须配置），
+     * 仅在开发环境无配置时使用默认值。硬编码密钥可被伪造任意 Token，是安全红线。
+     */
+    private static final String SECRET = System.getenv().getOrDefault("JWT_SECRET",
+            System.getProperty("jwt.secret",
+                    "EcommercePlatformSecretKeyForJWT2024MustBe256BitsLong!"));
     private static final SecretKey KEY = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
 
     /** AccessToken 过期时间：30 分钟 */

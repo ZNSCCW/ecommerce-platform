@@ -53,10 +53,16 @@ public class SeckillController {
     }
 
     /**
-     * 预热库存（活动开始前调用）
+     * 预热库存（活动开始前调用，仅管理员）
      */
     @PostMapping("/warm-up/{activityId}")
-    public Result<Void> warmUp(@PathVariable Long activityId) {
+    public Result<Void> warmUp(@RequestAttribute("userId") Long userId,
+                                @RequestAttribute("role") String role,
+                                @PathVariable Long activityId) {
+        // 预热会把 Redis 库存重置为满，必须限制为管理员，防止任意用户刷满库存作弊
+        if (!"ADMIN".equals(role) && !"SUPER_ADMIN".equals(role)) {
+            return Result.forbidden("无权限访问");
+        }
         seckillService.warmUpStock(activityId);
         return Result.success();
     }

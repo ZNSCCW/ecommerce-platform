@@ -246,7 +246,7 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 - **Redis + Lua 脚本** 实现库存扣减原子性，消除超卖
 - **RocketMQ 异步削峰** 将瞬时高并发流量打散为平滑消费
 - **Redisson 分布式锁** 防止同一用户重复下单
-- **Sentinel 双层限流**（网关层 + 服务层）保障核心链路稳定性
+- **Sentinel 限流**（依赖与配置已接入，流控规则待部署 dashboard 后启用）
 
 ### Redis 缓存三防
 
@@ -268,12 +268,12 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 
 ## 压测数据
 
-> 压测工具：Apache JMeter  
-> ⚠️ 以下数据为模板占位，请在实际环境中运行压测后填入真实数据。
+> 压测工具：Apache JMeter
+> ⚠️ 压测方案已设计（见 `docs/benchmark.md`），**数据待在实际环境执行后填充**——目前未运行压测，请勿在简历中引用未实测的 QPS 数字。
 
 | 场景 | 并发数 | QPS | P99 RT | 错误率 |
 |------|--------|-----|--------|--------|
-| 商品详情（无缓存） | 500 | — | — | — |
+| 商品详情（无缓存） | 500 | 待实测 | 待实测 | 待实测 |
 | 商品详情（有缓存） | 500 | — | — | — |
 | 秒杀下单（无 MQ 削峰） | 1000 | — | — | — |
 | 秒杀下单（MQ 削峰） | 5000 | — | — | — |

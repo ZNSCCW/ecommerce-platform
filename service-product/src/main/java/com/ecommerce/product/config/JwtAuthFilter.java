@@ -35,17 +35,26 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
         String method = request.getMethod();
-        // GET 请求且路径含公开片段则放行
-        if ("GET".equalsIgnoreCase(method) || "POST".equalsIgnoreCase(method)) {
+        // 内部接口（服务间 Feign 调用）：依赖内网隔离而非 JWT，一律放行
+        if (path.contains("/internal/")) {
+            return true;
+        }
+        // 浏览类 GET 放行（spu 详情/列表、category、sku 查询）
+        if ("GET".equalsIgnoreCase(method)) {
             for (String fragment : PUBLIC_PATH_FRAGMENTS) {
                 if (path.contains(fragment)) {
-                    // rebuild-index 例外
+                    // rebuild-index 例外：重建索引属于管理操作，需要鉴权
                     if (path.contains("rebuild-index")) {
                         return false;
                     }
                     return true;
                 }
             }
+            return false;
+        }
+        // POST 仅放行搜索（商品创建/更新/删除等写操作必须携带 Token）
+        if ("POST".equalsIgnoreCase(method) && path.contains("/search")) {
+            return true;
         }
         return false;
     }

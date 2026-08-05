@@ -1,6 +1,7 @@
 package com.ecommerce.seckill.config;
 
 import com.ecommerce.common.JwtUtil;
+import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -47,6 +48,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             }
             Long userId = JwtUtil.getUserId(token);
             request.setAttribute("userId", userId);
+            // 角色一并写入，供 warm-up 等管理接口做 ADMIN 校验
+            Claims claims = JwtUtil.parseToken(token);
+            request.setAttribute("role", claims.get("role", String.class));
             filterChain.doFilter(request, response);
         } catch (Exception e) {
             writeUnauthorized(response, "Token无效或已过期");
