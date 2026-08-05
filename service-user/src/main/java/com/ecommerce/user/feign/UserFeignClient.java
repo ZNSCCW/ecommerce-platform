@@ -1,7 +1,7 @@
 package com.ecommerce.user.feign;
 
 import com.ecommerce.common.Result;
-import com.ecommerce.user.entity.User;
+import com.ecommerce.user.dto.UserInfoResponse;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -14,5 +14,5 @@ import org.springframework.web.bind.annotation.PathVariable;
 public interface UserFeignClient {
 
     @GetMapping("/{id}")
-    Result<User> getById(@PathVariable("id") Long id);
+    Result<UserInfoResponse> getById(@PathVariable("id") Long id);
 }

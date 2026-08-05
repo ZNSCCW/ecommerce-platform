@@ -70,19 +70,34 @@ public class OrderService {
      */
     private static final int DELAY_LEVEL_30MIN = 16;
 
-    @Transactional
     public OrderVO createOrder(Long userId, CreateOrderRequest request) {
-        // 1. 调用商品服务扣减库存
+        // Step 1: 扣减库存（事务外，Feign 远程调用）
         for (CreateOrderRequest.OrderItemRequest item : request.getItems()) {
             Result<Boolean> result = productFeignClient.deductStock(item.getSkuId(), item.getQuantity());
             if (result == null || !Boolean.TRUE.equals(result.getData())) {
-                // 扣减失败，回滚已扣减的库存
                 rollbackStock(request.getItems(), item.getSkuId());
                 throw new BusinessException(ResultCode.STOCK_NOT_ENOUGH);
             }
         }
 
-        // 2. 生成订单
+        // Step 2: 本地事务 — 生成订单 + 明细
+        OrderVO orderVO = doCreateOrder(userId, request);
+
+        // Step 3: 发送延迟消息（事务外）
+        rocketMQTemplate.syncSend(
+                "order-cancel-topic",
+                MessageBuilder.withPayload(String.valueOf(orderVO.getId())).build(),
+                3000,
+                DELAY_LEVEL_30MIN
+        );
+
+        log.info("订单创建成功: orderNo={}, userId={}", orderVO.getOrderNo(), userId);
+        return orderVO;
+    }
+
+    @Transactional
+    public OrderVO doCreateOrder(Long userId, CreateOrderRequest request) {
+        // 生成订单（事务内只操作本地 DB）
         Snowflake snowflake = IdUtil.getSnowflake(1, 1);
         Order order = new Order();
         order.setOrderNo(String.valueOf(snowflake.nextId()));
@@ -117,15 +132,7 @@ public class OrderService {
             orderItemMapper.insert(orderItem);
         }
 
-        // 发送延迟消息：30 分钟后检查支付状态
-        rocketMQTemplate.syncSend(
-                "order-cancel-topic",
-                MessageBuilder.withPayload(String.valueOf(order.getId())).build(),
-                3000,
-                DELAY_LEVEL_30MIN
-        );
-
-        log.info("订单创建成功: orderNo={}, userId={}", order.getOrderNo(), userId);
+        // 延迟消息由 createOrder() 在事务外发送，避免重复+幽灵消息
         return buildOrderVO(order);
     }
 
@@ -188,26 +195,28 @@ public class OrderService {
      * 取消订单（用户主动取消）
      */
     @Transactional
-    public void cancel(Long orderId, Long userId, String reason) {
-        Order order = orderMapper.selectById(orderId);
-        if (order == null) {
-            throw new BusinessException(ResultCode.ORDER_NOT_FOUND);
-        }
-        // 校验订单归属
-        if (!order.getUserId().equals(userId)) {
-            throw new BusinessException(ResultCode.FORBIDDEN);
-        }
-
-        // updateStatus 内部会校验状态机：0(待支付) → 4(已取消) 合法
+    public void doCancelDb(Long orderId, String reason) {
         updateStatus(orderId, 4);
-
         Order update = new Order();
         update.setId(orderId);
         update.setCancelReason(reason);
         update.setCancelTime(LocalDateTime.now());
         orderMapper.updateById(update);
+    }
 
-        // 恢复库存
+    public void cancel(Long orderId, Long userId, String reason) {
+        Order order = orderMapper.selectById(orderId);
+        if (order == null) {
+            throw new BusinessException(ResultCode.ORDER_NOT_FOUND);
+        }
+        if (!order.getUserId().equals(userId)) {
+            throw new BusinessException(ResultCode.FORBIDDEN);
+        }
+
+        // Step 1: 本地事务更新订单状态（仅操作 DB）
+        doCancelDb(orderId, reason);
+
+        // Step 2: Feign 调用恢复库存（事务外）
         List<OrderItem> items = orderItemMapper.findByOrderId(orderId);
         for (OrderItem item : items) {
             try {
@@ -221,20 +230,22 @@ public class OrderService {
     // ==================== 超时取消（RocketMQ 消费者调用） ====================
 
     @Transactional
-    public void cancelExpired(Long orderId) {
+    public void doCancelExpiredDb(Long orderId) {
         Order order = orderMapper.selectById(orderId);
         if (order == null || order.getStatus() != 0) {
-            return; // 已支付或已取消的订单无需处理
+            return;
         }
-
         updateStatus(orderId, 4);
         Order update = new Order();
         update.setId(orderId);
         update.setCancelReason("支付超时，系统自动取消");
         update.setCancelTime(LocalDateTime.now());
         orderMapper.updateById(update);
+    }
 
-        // 恢复库存
+    public void cancelExpired(Long orderId) {
+        doCancelExpiredDb(orderId);
+
         List<OrderItem> items = orderItemMapper.findByOrderId(orderId);
         for (OrderItem item : items) {
             try {

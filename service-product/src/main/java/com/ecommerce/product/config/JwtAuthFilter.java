@@ -21,18 +21,39 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final RedisTemplate<String, Object> redisTemplate;
 
+    /**
+     * 无需鉴权的路径片段（匹配 Gateway 和直连两种场景）
+     */
+    private static final String[] PUBLIC_PATH_FRAGMENTS = {
+            "/spu",   // GET /api/product/spu/{id} 或 GET /spu/{id}
+            "/search", // POST /api/product/search 或 POST /search
+            "/category", // GET /api/product/category 或 GET /category
+            "/sku"    // GET /api/product/sku 或 GET /sku
+    };
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        String method = request.getMethod();
+        // GET 请求且路径含公开片段则放行
+        if ("GET".equalsIgnoreCase(method) || "POST".equalsIgnoreCase(method)) {
+            for (String fragment : PUBLIC_PATH_FRAGMENTS) {
+                if (path.contains(fragment)) {
+                    // rebuild-index 例外
+                    if (path.contains("rebuild-index")) {
+                        return false;
+                    }
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        String path = request.getRequestURI();
-        String method = request.getMethod();
-
-        // 公开接口放行（商品浏览、搜索、分类查询）
-        if (isPublicPath(path, method)) {
-            filterChain.doFilter(request, response);
-            return;
-        }
 
         // 从 Header 获取 Token
         String authHeader = request.getHeader("Authorization");

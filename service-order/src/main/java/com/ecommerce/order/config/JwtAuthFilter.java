@@ -1,4 +1,4 @@
-package com.ecommerce.payment.config;
+package com.ecommerce.order.config;
 
 import com.ecommerce.common.JwtUtil;
 import jakarta.servlet.FilterChain;
@@ -20,14 +20,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getRequestURI().contains("/notify");
+        String path = request.getRequestURI();
+        return path.contains("/pay") || path.contains("/pay-by-order-no");
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-
         String authHeader = request.getHeader("Authorization");
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
             response.setStatus(401);
@@ -35,7 +35,6 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             response.getWriter().write("{\"code\":401,\"msg\":\"未登录\",\"data\":null}");
             return;
         }
-
         try {
             String token = authHeader.replace("Bearer ", "");
             if (Boolean.TRUE.equals(redisTemplate.hasKey("token:blacklist:" + token))) {

@@ -21,11 +21,28 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final RedisTemplate<String, Object> redisTemplate;
 
+    /** 无需鉴权的路径前缀 */
+    private static final String[] WHITE_LIST = {
+            "/login",
+            "/register",
+            "/refresh"
+    };
+
+    @Override
+    protected boolean shouldNotFilter(HttpServletRequest request) {
+        String path = request.getRequestURI();
+        for (String white : WHITE_LIST) {
+            if (path.contains(white)) {
+                return true; // 放行
+            }
+        }
+        return false;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request,
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
-        String path = request.getRequestURI();
 
         // 从 Header 获取 Token
         String authHeader = request.getHeader("Authorization");

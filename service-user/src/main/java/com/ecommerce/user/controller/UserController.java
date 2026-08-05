@@ -17,12 +17,16 @@ public class UserController {
     private final UserService userService;
 
     @GetMapping("/{id}")
-    public Result<UserInfoResponse> getById(@PathVariable Long id) {
+    public Result<UserInfoResponse> getById(@RequestAttribute("userId") Long currentUserId,
+                                             @PathVariable Long id) {
+        // 仅允许查看自己的信息，防止 IDOR 越权
+        if (!currentUserId.equals(id)) {
+            throw new BusinessException(ResultCode.FORBIDDEN);
+        }
         User user = userService.getById(id);
         if (user == null) {
             throw new BusinessException(ResultCode.USER_NOT_FOUND);
         }
-        // 返回不含密码的用户信息
         UserInfoResponse resp = new UserInfoResponse();
         resp.setId(user.getId());
         resp.setUsername(user.getUsername());

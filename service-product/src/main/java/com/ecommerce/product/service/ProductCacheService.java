@@ -2,9 +2,9 @@ package com.ecommerce.product.service;
 
 import com.ecommerce.product.dto.SpuVO;
 import com.ecommerce.product.entity.Spu;
-import lombok.RequiredArgsConstructor;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
 
@@ -14,12 +14,19 @@ import java.util.concurrent.TimeUnit;
  * 商品缓存服务 - Cache Aside + 防击穿/穿透/雪崩
  */
 @Service
-@RequiredArgsConstructor
 public class ProductCacheService {
 
     private final RedisTemplate<String, Object> redisTemplate;
     private final RedissonClient redissonClient;
     private final ProductService productService;
+
+    public ProductCacheService(RedisTemplate<String, Object> redisTemplate,
+                               RedissonClient redissonClient,
+                               @Lazy ProductService productService) {
+        this.redisTemplate = redisTemplate;
+        this.redissonClient = redissonClient;
+        this.productService = productService;
+    }
 
     private static final String CACHE_PREFIX = "product:spu:";
     private static final String LOCK_PREFIX = "lock:product:spu:";

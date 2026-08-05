@@ -7,7 +7,7 @@
 -- 返回值: 0=库存不足 1=成功 -1=超过限购
 
 local stock = redis.call('get', KEYS[1])
-if not stock or tonumber(stock) <= 0 then
+if not stock or tonumber(stock) < tonumber(ARGV[1]) then
     return 0  -- 库存不足
 end
 

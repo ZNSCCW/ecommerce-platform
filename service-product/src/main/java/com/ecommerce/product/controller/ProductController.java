@@ -33,12 +33,12 @@ public class ProductController {
     }
 
     @PostMapping("/spu")
-    public Result<Long> create(@RequestBody Spu spu) {
+    public Result<Long> create(@jakarta.validation.Valid @RequestBody Spu spu) {
         return Result.success(productService.createSpu(spu));
     }
 
     @PutMapping("/spu")
-    public Result<Void> update(@RequestBody Spu spu) {
+    public Result<Void> update(@jakarta.validation.Valid @RequestBody Spu spu) {
         productService.updateSpu(spu);
         return Result.success();
     }
@@ -63,12 +63,12 @@ public class ProductController {
     }
 
     @PostMapping("/sku")
-    public Result<Long> createSku(@RequestBody Sku sku) {
+    public Result<Long> createSku(@jakarta.validation.Valid @RequestBody Sku sku) {
         return Result.success(productService.createSku(sku));
     }
 
     @PutMapping("/sku")
-    public Result<Void> updateSku(@RequestBody Sku sku) {
+    public Result<Void> updateSku(@jakarta.validation.Valid @RequestBody Sku sku) {
         productService.updateSku(sku);
         return Result.success();
     }
