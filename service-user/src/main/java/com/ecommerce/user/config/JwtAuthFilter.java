@@ -55,25 +55,30 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String token = authHeader.replace("Bearer ", "");
 
+        // 解析 Token（不依赖 Redis，JWT 本地可验证）
+        Long userId;
         try {
-            // 检查黑名单
+            userId = JwtUtil.getUserId(token);
+        } catch (Exception e) {
+            response.setStatus(401);
+            response.setContentType("application/json;charset=utf-8");
+            response.getWriter().write("{\"code\":401,\"msg\":\"Token无效或已过期\",\"data\":null}");
+            return;
+        }
+
+        // 检查黑名单（Redis 不可用时降级放行）
+        try {
             if (Boolean.TRUE.equals(redisTemplate.hasKey("token:blacklist:" + token))) {
                 response.setStatus(401);
                 response.setContentType("application/json;charset=utf-8");
                 response.getWriter().write("{\"code\":401,\"msg\":\"Token已失效\",\"data\":null}");
                 return;
             }
-
-            // 解析 Token
-            Long userId = JwtUtil.getUserId(token);
-            // 将 userId 放入请求属性，供 Controller 使用
-            request.setAttribute("userId", userId);
-
-            filterChain.doFilter(request, response);
-        } catch (Exception e) {
-            response.setStatus(401);
-            response.setContentType("application/json;charset=utf-8");
-            response.getWriter().write("{\"code\":401,\"msg\":\"Token无效或已过期\",\"data\":null}");
+        } catch (Exception ignored) {
+            // Redis 不可用，跳过黑名单检查
         }
+
+        request.setAttribute("userId", userId);
+        filterChain.doFilter(request, response);
     }
 }
