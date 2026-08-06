@@ -30,23 +30,26 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String authHeader = request.getHeader("Authorization");
         if (authHeader == null || !authHeader.startsWith("Bearer ")) {
-            response.setStatus(401);
-            response.setContentType("application/json;charset=utf-8");
-            response.getWriter().write("{\"code\":401,\"msg\":\"未登录\",\"data\":null}");
+            writeUnauthorized(response, "未登录");
             return;
         }
         try {
-            String token = authHeader.replace("Bearer ", "");
+            String token = authHeader.replace("Bearer ", "").trim();
             if (Boolean.TRUE.equals(redisTemplate.hasKey("token:blacklist:" + token))) {
-                response.setStatus(401);
-                response.getWriter().write("{\"code\":401,\"msg\":\"Token已失效\",\"data\":null}");
+                writeUnauthorized(response, "Token已失效");
                 return;
             }
             request.setAttribute("userId", JwtUtil.getUserId(token));
             filterChain.doFilter(request, response);
         } catch (Exception e) {
-            response.setStatus(401);
-            response.getWriter().write("{\"code\":401,\"msg\":\"Token无效\",\"data\":null}");
+            writeUnauthorized(response, "Token无效");
         }
+    }
+
+    /** 统一写 401 JSON 响应（保证所有 401 路径都有正确的 content-type） */
+    private void writeUnauthorized(HttpServletResponse response, String msg) throws IOException {
+        response.setStatus(401);
+        response.setContentType("application/json;charset=utf-8");
+        response.getWriter().write("{\"code\":401,\"msg\":\"" + msg + "\",\"data\":null}");
     }
 }

@@ -41,7 +41,7 @@ public class OrderController {
      */
     @GetMapping("/page")
     public Result<IPage<Order>> page(@RequestAttribute("userId") Long userId,
-                                      OrderPageRequest request) {
+                                      @Valid OrderPageRequest request) {
         return Result.success(orderService.page(userId, request));
     }
 

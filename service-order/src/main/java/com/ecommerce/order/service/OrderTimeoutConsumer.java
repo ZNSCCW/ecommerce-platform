@@ -22,7 +22,14 @@ public class OrderTimeoutConsumer implements RocketMQListener<String> {
 
     @Override
     public void onMessage(String orderIdStr) {
-        Long orderId = Long.parseLong(orderIdStr);
+        Long orderId;
+        try {
+            orderId = Long.parseLong(orderIdStr);
+        } catch (NumberFormatException e) {
+            // 脏消息：非数字 orderId 直接丢弃并记录，避免异常消息拖垮消费端
+            log.warn("收到非法超时消息，已丢弃: {}", orderIdStr);
+            return;
+        }
         log.info("收到超时取消消息: orderId={}", orderId);
         try {
             orderService.cancelExpired(orderId);
