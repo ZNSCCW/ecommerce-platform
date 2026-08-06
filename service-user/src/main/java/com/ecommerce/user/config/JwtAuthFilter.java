@@ -7,6 +7,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -21,18 +24,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final RedisTemplate<String, Object> redisTemplate;
 
-    /** 无需鉴权的路径前缀 */
+    /** 无需鉴权的完整路径（与 SecurityConfig.permitAll 保持一致；精确匹配，禁止 substring） */
     private static final String[] WHITE_LIST = {
-            "/login",
-            "/register",
-            "/refresh"
+            "/api/user/login",
+            "/api/user/register",
+            "/api/user/refresh"
     };
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
         for (String white : WHITE_LIST) {
-            if (path.contains(white)) {
+            if (path.equals(white)) {
                 return true; // 放行
             }
         }
@@ -79,6 +82,13 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         request.setAttribute("userId", userId);
+
+        // 填充 SecurityContext：否则 SecurityConfig 的 .authenticated() 永不通过，授权层形同虚设
+        UsernamePasswordAuthenticationToken authentication =
+                new UsernamePasswordAuthenticationToken(userId, null,
+                        java.util.Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER")));
+        SecurityContextHolder.getContext().setAuthentication(authentication);
+
         filterChain.doFilter(request, response);
     }
 }

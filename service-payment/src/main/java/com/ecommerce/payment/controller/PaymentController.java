@@ -25,6 +25,9 @@ public class PaymentController {
     @PostMapping
     public Result<PayResponse> createPay(@RequestAttribute("userId") Long userId,
                                           @Valid @RequestBody PayRequest request) {
+        if (userId == null) {
+            return Result.error(401, "未登录");
+        }
         return Result.success(paymentService.createPay(request, userId));
     }
 

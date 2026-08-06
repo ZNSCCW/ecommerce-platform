@@ -24,8 +24,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
+        // 与 SecurityConfig.permitAll 保持一致：Ant 精确匹配公开端点，禁止 substring 匹配
         String path = request.getRequestURI();
-        return path.contains("activities") || path.contains("/stock/");
+        org.springframework.util.AntPathMatcher m = new org.springframework.util.AntPathMatcher();
+        return m.match("/api/seckill/activities/**", path)
+                || m.match("/api/seckill/stock/**", path);
     }
 
     @Override

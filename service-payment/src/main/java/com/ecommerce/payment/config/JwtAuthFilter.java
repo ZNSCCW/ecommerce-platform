@@ -20,7 +20,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return request.getRequestURI().contains("/notify");
+        // 精确匹配支付宝回调路径；禁止 substring 匹配，防止 /xxx/notify/yyy 类路径被误放行
+        return "/api/payment/notify".equals(request.getRequestURI());
     }
 
     @Override

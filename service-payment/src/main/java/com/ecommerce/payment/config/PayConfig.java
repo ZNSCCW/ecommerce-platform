@@ -29,4 +29,12 @@ public class PayConfig {
 
     /** 模拟支付模式（true=不调真实支付宝，直接返回成功） */
     private boolean mockMode = true;
+
+    /**
+     * 模拟支付回调的 HMAC 签名密钥。
+     * createPay 生成的模拟表单带 sign=HMAC(secret, payNo|tradeNo|total_amount)，
+     * handleNotify 验签通过才允许更新支付状态——防止伪造回调把任意订单标记为已支付。
+     * 学习/部署环境请改为随机值；正式集成支付宝后移除。
+     */
+    private String mockSecret = "dev-mock-secret-change-me";  // TODO: 替换为随机值
 }

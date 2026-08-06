@@ -5,7 +5,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 
-@SpringBootApplication(scanBasePackages = {"com.ecommerce"})
+@SpringBootApplication(scanBasePackages = {"com.ecommerce.common", "com.ecommerce.payment"})
 @EnableDiscoveryClient
 @EnableFeignClients(basePackages = {"com.ecommerce.payment.feign"})
 public class PaymentServiceApplication {

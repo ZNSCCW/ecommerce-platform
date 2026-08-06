@@ -8,12 +8,12 @@ import org.apache.ibatis.annotations.Select;
 @Mapper
 public interface PayRecordMapper extends BaseMapper<PayRecord> {
 
-    @Select("SELECT * FROM t_pay_record WHERE trade_no = #{tradeNo} AND deleted = 0")
+    @Select("SELECT * FROM t_pay_record WHERE trade_no = #{tradeNo} AND deleted = 0 ORDER BY id DESC LIMIT 1")
     PayRecord findByTradeNo(String tradeNo);
 
-    @Select("SELECT * FROM t_pay_record WHERE order_no = #{orderNo} AND deleted = 0")
+    @Select("SELECT * FROM t_pay_record WHERE order_no = #{orderNo} AND deleted = 0 ORDER BY id DESC LIMIT 1")
     PayRecord findByOrderNo(String orderNo);
 
-    @Select("SELECT * FROM t_pay_record WHERE pay_no = #{payNo} AND deleted = 0")
+    @Select("SELECT * FROM t_pay_record WHERE pay_no = #{payNo} AND deleted = 0 ORDER BY id DESC LIMIT 1")
     PayRecord findByPayNo(String payNo);
 }
