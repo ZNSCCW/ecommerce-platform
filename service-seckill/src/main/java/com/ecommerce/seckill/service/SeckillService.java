@@ -21,7 +21,7 @@ import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.messaging.support.MessageBuilder;
 import org.springframework.stereotype.Service;
@@ -44,7 +44,11 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class SeckillService {
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    /**
+     * 用 StringRedisTemplate（String 序列化）：Lua 脚本与预热库存的 key/value 都必须是明文可被 tonumber 解析。
+     * 若用 Redisson 默认 codec 的 RedisTemplate，ARGS 会被序列化导致 Lua tonumber 拿到 nil。
+     */
+    private final StringRedisTemplate redisTemplate;
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
     private final SeckillActivityMapper activityMapper;
@@ -59,8 +63,10 @@ public class SeckillService {
     private static final String STOCK_PREFIX = "seckill:stock:";
     /** 用户限购前缀 */
     private static final String LIMIT_PREFIX = "seckill:limit:";
-    /** 已购用户去重前缀 */
+    /** 已购用户去重前缀（订单去重标记） */
     private static final String ORDERED_PREFIX = "seckill:ordered:";
+    /** 分布式锁前缀（必须与 ORDERED_PREFIX 不同！否则 tryLock 创建的锁会被 hasKey 误判为已下单） */
+    private static final String LOCK_PREFIX = "seckill:lock:";
 
     @PostConstruct
     public void init() {
@@ -88,7 +94,7 @@ public class SeckillService {
         List<SeckillProduct> products = productMapper.findByActivityId(activityId);
         for (SeckillProduct p : products) {
             String stockKey = STOCK_PREFIX + activityId + ":" + p.getSkuId();
-            redisTemplate.opsForValue().set(stockKey, p.getSeckillStock(), expireSec, TimeUnit.SECONDS);
+            redisTemplate.opsForValue().set(stockKey, String.valueOf(p.getSeckillStock()), expireSec, TimeUnit.SECONDS);
             log.info("秒杀库存预热: key={}, stock={}, ttl={}s", stockKey, p.getSeckillStock(), expireSec);
         }
     }
@@ -125,15 +131,18 @@ public class SeckillService {
         }
 
         // 3. 分布式锁：防止同一个用户重复提交（key 粒度 = 用户 + 活动 + SKU）
-        String lockKey = ORDERED_PREFIX + activityId + ":" + skuId + ":" + userId;
+        // 注意 lockKey 前缀必须与 orderedKey 不同，否则锁 key 会被下面的 hasKey 误判为已下单
+        String lockKey = LOCK_PREFIX + activityId + ":" + skuId + ":" + userId;
         RLock lock = redissonClient.getLock(lockKey);
         try {
             if (!lock.tryLock(0, 5, TimeUnit.SECONDS)) {
                 // 没拿到锁说明正在处理，视为重复
+                log.warn("[seckill] REPEAT@tryLock: lockKey={}", lockKey);
                 throw new BusinessException(ResultCode.SECKILL_REPEAT);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("[seckill] REPEAT@Interrupted: lockKey={}", lockKey);
             throw new BusinessException(ResultCode.SECKILL_REPEAT);
         }
 
@@ -141,11 +150,14 @@ public class SeckillService {
             // 4. 检查是否已下过单（Redis 标记 + DB 双检）
             String orderedKey = ORDERED_PREFIX + activityId + ":" + skuId + ":" + userId;
             if (Boolean.TRUE.equals(redisTemplate.hasKey(orderedKey))) {
+                log.warn("[seckill] REPEAT@orderedKey: {}", orderedKey);
                 throw new BusinessException(ResultCode.SECKILL_REPEAT);
             }
             // DB 双检
             int count = orderMapper.countByUserAndActivity(userId, activityId);
             if (count >= seckillProduct.getLimitPerUser()) {
+                log.warn("[seckill] REPEAT@dbCount: count={} limit={}, userId={}, activityId={}",
+                        count, seckillProduct.getLimitPerUser(), userId, activityId);
                 throw new BusinessException(ResultCode.SECKILL_REPEAT);
             }
 
@@ -163,8 +175,10 @@ public class SeckillService {
 
             if (result == null || result <= 0) {
                 if (result != null && result == -1) {
+                    log.warn("[seckill] REPEAT@luaLimit: limitKey={}, stockKey={}", limitKey, stockKey);
                     throw new BusinessException(ResultCode.SECKILL_REPEAT);
                 }
+                log.warn("[seckill] STOCK_EMPTY@lua: result={}, stockKey={}", result, stockKey);
                 throw new BusinessException(ResultCode.SECKILL_STOCK_EMPTY);
             }
 
@@ -202,9 +216,13 @@ public class SeckillService {
      */
     public int getStock(Long activityId, Long skuId) {
         String key = STOCK_PREFIX + activityId + ":" + skuId;
-        Object val = redisTemplate.opsForValue().get(key);
+        String val = redisTemplate.opsForValue().get(key);
         if (val != null) {
-            return ((Number) val).intValue();
+            try {
+                return Integer.parseInt(val);
+            } catch (NumberFormatException ignore) {
+                // 值异常按无缓存处理，走 DB 兜底
+            }
         }
         // Redis 无数据则查 DB
         SeckillProduct product = productMapper.selectOne(
