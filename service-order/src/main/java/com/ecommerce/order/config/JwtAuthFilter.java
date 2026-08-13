@@ -6,6 +6,8 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -19,6 +21,8 @@ import java.io.IOException;
 @Component
 @RequiredArgsConstructor
 public class JwtAuthFilter extends OncePerRequestFilter {
+
+    private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
 
     private final RedisTemplate<String, Object> redisTemplate;
 
@@ -58,8 +62,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
             filterChain.doFilter(request, response);
         } catch (Exception e) {
+            // 记录真实异常（静默吞异常会导致线上 401 无法排查）
+            log.error("JWT 鉴权失败, token前缀={}", safePrefix(authHeader), e);
             writeUnauthorized(response, "Token无效");
         }
+    }
+
+    /** 只记录 token 前 20 字符，避免完整 token 落日志 */
+    private String safePrefix(String authHeader) {
+        if (authHeader == null || authHeader.length() < 20) {
+            return "<null或过短>";
+        }
+        return authHeader.substring(0, 20) + "...";
     }
 
     /** 统一写 401 JSON 响应（保证所有 401 路径都有正确的 content-type） */

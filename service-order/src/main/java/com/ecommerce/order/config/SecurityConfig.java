@@ -22,7 +22,9 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers("/api/order/**/pay", "/api/order/pay-by-order-no").permitAll()
+                        // 支付回调/模拟支付接口：/api/order/{id}/pay 与 /api/order/pay-by-order-no
+                        // 注意：不能用 /api/order/**/pay —— Spring 6 PathPatternParser 不允许 ** 后跟其他模式元素，会抛 PatternParseException
+                        .requestMatchers("/api/order/*/pay", "/api/order/pay-by-order-no").permitAll()
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
