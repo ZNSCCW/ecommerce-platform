@@ -91,9 +91,23 @@ curl -s "http://localhost:8080/api/order/page?page=1&size=10" -H "Authorization:
 
 ### 模拟支付
 
+> 回调必须带 `createPay` 签发的 HMAC 签名（sign 覆盖 payNo|tradeNo|trade_status|total_amount），否则验签失败返回 `failure`。
+
+**Step 1：创建支付单**（接口是 `POST /api/payment`，不是 /create）
+
 ```bash
-curl -s -X POST "http://localhost:8080/api/payment/notify" -H "Content-Type: application/x-www-form-urlencoded" -d "out_trade_no=PAY123456&trade_no=MOCK1680000000000&trade_status=TRADE_SUCCESS&total_amount=100.00"
+curl -s -X POST http://localhost:8080/api/payment -H "Content-Type: application/json" -H "Authorization: Bearer %TOKEN%" -d "{\"orderNo\":\"订单号\",\"amount\":8999.00}"
 ```
+
+返回 `data.payForm` 是一个 HTML 表单，里面含 `out_trade_no / trade_no / trade_status / total_amount / sign` 五个字段。
+
+**Step 2：模拟回调**（把 payForm 里的值填进来）
+
+```bash
+curl -s -X POST "http://localhost:8080/api/payment/notify" -H "Content-Type: application/x-www-form-urlencoded" -d "out_trade_no=<payNo>&trade_no=<tradeNo>&trade_status=TRADE_SUCCESS&total_amount=<金额>&sign=<sign>"
+```
+
+返回 `success` 后订单状态变为「已支付」（幂等：重复回调返回 success 不重复处理）。
 
 ### 取消订单
 
@@ -120,8 +134,14 @@ UPDATE db_seckill.t_seckill_product SET seckill_stock = 10 WHERE id = 1;
 
 ### 预热库存
 
+> ⚠️ warm-up 接口限 ADMIN/SUPER_ADMIN（防任意用户刷满库存），**必须用管理员账号登录**拿 token：
+
 ```bash
-curl -s -X POST http://localhost:8080/api/seckill/warm-up/1 -H "Authorization: Bearer %TOKEN%"
+curl -s -X POST http://localhost:8080/api/user/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"<DEFAULT_ADMIN_PASSWORD>\"}"
+```
+
+```bash
+curl -s -X POST http://localhost:8080/api/seckill/warm-up/1 -H "Authorization: Bearer <管理员Token>"
 ```
 
 ### 查看活动与库存
