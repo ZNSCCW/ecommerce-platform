@@ -13,6 +13,8 @@
 - [快速启动](#快速启动)
 - [接口概览](#接口概览)
 - [项目亮点](#项目亮点)
+- [实测验证](#实测验证)
+- [踩坑与修复记录](#踩坑与修复记录)
 - [压测数据](#压测数据)
 
 ---
@@ -132,6 +134,17 @@ docker compose -f ecommerce-platform/docker-compose.yml up -d
 # 确认全部 running
 docker compose ps
 ```
+
+> ⚠️ **本机环境注意事项**（踩坑总结，见文末[踩坑与修复记录](#踩坑与修复记录)）：
+> 1. **本机已装 MySQL 占 3306 端口**时，docker 里的 `mysql` 容器会起不来——本项目服务写死连 `localhost:3306`，**直接用本机 MySQL 即可**（docker 只跑 redis/nacos/rocketmq/es/kibana）。以后启动中间件用：
+>    ```bash
+>    docker compose up -d redis nacos rmq-namesrv rmq-broker rmq-dashboard elasticsearch kibana
+>    ```
+> 2. **RocketMQ broker 首次启动报 `NullPointerException`（假象）**：根因是 Docker Desktop 的 named volume 挂载点属主为 root、broker 以 rocketmq 用户运行无写权限。重建 volume 后需执行一次：
+>    ```bash
+>    docker run --rm -v ecommerce-platform_broker-data://home/rocketmq/store --user root apache/rocketmq:5.1.4 chown -R rocketmq:rocketmq //home/rocketmq/store
+>    ```
+> 3. **不要重复启动多套服务**：`start-all.bat` 和手动 `java -jar` 会各自拉起一套进程，秒杀服务的 Redisson 锁跨实例互斥会导致随机"请勿重复下单"。
 
 ### 2. 初始化数据库
 
@@ -263,6 +276,69 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
   │
   └──→ 已取消（用户主动 / 30分钟超时自动）
 ```
+
+---
+
+## 实测验证
+
+> 2026-08-13 全链路从零到一实机跑通（本机 MySQL + Docker 中间件），逐环节验证通过：
+
+| # | 环节 | 结果 |
+|---|------|------|
+| 1 | 用户登录（普通用户 + 管理员） | ✅ JWT 签发/解析正常 |
+| 2 | 商品浏览 | ✅ 分页/详情正常 |
+| 3 | 下单 | ✅ 订单创建，Feign 取真实价格 |
+| 4 | 取消订单（待支付） | ✅ 状态机流转 + Feign 恢复库存 |
+| 5 | 支付（createPay + 回调验签） | ✅ HMAC 验签通过，订单 → 已支付 |
+| 6 | 秒杀预热（管理员） | ✅ ADMIN 权限校验 |
+| 7 | 秒杀 | ✅ Lua 扣库存 → MQ 削峰 → 异步建单 |
+
+完整测试流程见 `docs/testing.md`。
+
+---
+
+## 踩坑与修复记录
+
+> 开发/联调中发现并已修复的关键问题，作为复盘与面试素材。全部已提交并推送。
+
+### 1. JwtAuthFilter 未填充 SecurityContext → 业务接口全 401（P0）
+
+**现象**：登录、浏览正常，但下单/秒杀/支付等需登录接口一律返回 401。
+
+**根因**：除 `service-user` 外，其余 4 个服务的 `JwtAuthFilter` 只 `request.setAttribute("userId")`，没有把身份写入 `SecurityContextHolder`。而各服务 `SecurityConfig` 都配了 `anyRequest().authenticated()`，Spring Security 的授权决策读的是 SecurityContext，匿名身份被 `authenticated()` 拒绝。
+
+**修复**：过滤器解析 Token 后构造 `UsernamePasswordAuthenticationToken` 塞进 `SecurityContextHolder`（seckill 额外映射 `ROLE_ADMIN`）。
+
+### 2. SecurityConfig 非法路径模式 `/**/pay` → PatternParseException（P0）
+
+**现象**：order 服务任何请求都返回 401 "Token无效"（异常被 JwtAuthFilter 静默 catch 吞掉，伪装成 Token 问题）。
+
+**根因**：`requestMatchers("/api/order/**/pay")` 里 `/**` 后面还跟 `/pay`——Spring 6 的 `PathPatternParser`（MvcRequestMatcher 底层）**不允许 `**` 后跟其他模式元素**，解析时抛 `PatternParseException`。
+
+**修复**：改为 `/api/order/*/pay`（单段通配）。同时给 JwtAuthFilter 的 catch 补上 `log.error`（原静默吞异常导致排查困难）。
+
+### 3. 秒杀 lockKey 与 orderedKey 同 key → 永远"请勿重复下单"（P0）
+
+**现象**：秒杀永远返回 4003 请勿重复下单，从未成功。
+
+**根因**：`SeckillService` 里分布式锁 key 和"已下单"去重 key 都用 `ORDERED_PREFIX + activityId:skuId:userId` 拼接——**tryLock 刚创建的锁，紧接着 `hasKey` 检查就命中，100% 误判为已下单**。
+
+**修复**：新增独立 `LOCK_PREFIX = "seckill:lock:"`，锁 key 与去重 key 分离。定位手段：Redis `MONITOR` 抓命令 + 打日志确认 `REPEAT@orderedKey` 分支。
+
+### 4. Redisson codec 序列化 Lua 参数 → "compare number with nil"（P0）
+
+**现象**：秒杀 Lua 脚本报 `ERR attempt to compare number with nil`。
+
+**根因**：seckill 的 `RedisTemplate` 实际是 `RedissonConnectionFactory`（Redisson 自动配置替换），Redisson 默认 codec 会把 `ARGV["1"]` 等参数序列化，Lua 里 `tonumber(ARGV[1])` 拿到 nil。手动 EVAL 明文参数可成功，对照实验定位。
+
+**修复**：改用 `StringRedisTemplate`（String 序列化，key/value/args 均为明文，与 Lua `tonumber` 兼容）。
+
+### 5. 环境类坑（不影响代码，但启动必踩）
+
+- **3306 端口冲突**：本机 MySQL 占 3306，docker mysql 容器起不来；服务写死 localhost:3306，直接用本机 MySQL。
+- **RocketMQ broker 假 NPE**：Docker Desktop named volume 属主为 root，broker 无写权限 → store 初始化失败，异常被 shutdown 的 NPE 掩盖。
+- **双实例**：多套服务进程并存时 Redisson 锁跨实例互斥，秒杀随机判重。
+- **localhost 解析**：Java 解析 `localhost` 可能走 IPv6 `::1`（wslrelay），排查 Redis 时需注意与 `127.0.0.1`（docker）区分。
 
 ---
 

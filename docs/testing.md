@@ -179,6 +179,31 @@ curl -s -X POST http://localhost:8080/api/seckill -H "Content-Type: application/
 
 重复秒杀应返回"请勿重复下单"。
 
+### 验证秒杀订单（MQ 异步建单）
+
+秒杀返回"排队中"后，等几秒让 RocketMQ 消费者异步建单，再查库：
+
+```sql
+SELECT id, order_no, user_id, activity_id, sku_id, seckill_price, status FROM db_seckill.t_seckill_order;
+```
+
+秒杀订单 `status=0`（待支付），同时商品真实库存被 Feign 扣减。
+
+### 重复测试注意事项
+
+> ⚠️ 秒杀成功后 Redis 会写入 `seckill:ordered:{activityId}:{skuId}:{userId}`（30 分钟 TTL）和 `seckill:limit:{...}`（活动时长 TTL）。**跨轮次重复实测前必须清理**，否则同一用户会一直命中"请勿重复下单"：
+
+```bash
+docker exec ecommerce-redis redis-cli DEL "seckill:ordered:1:1:2" "seckill:limit:1:1:2"   # 2 = alice 的 userId
+```
+
+同时清理 DB 里的秒杀订单与普通订单，保证从零重测：
+```sql
+DELETE FROM db_seckill.t_seckill_order;
+DELETE FROM db_order.t_order_item; DELETE FROM db_order.t_order;
+DELETE FROM db_payment.t_pay_record;
+```
+
 ---
 
 ## 5. 监控面板
