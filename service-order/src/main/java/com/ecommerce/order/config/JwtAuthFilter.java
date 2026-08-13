@@ -7,7 +7,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
@@ -18,10 +22,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final RedisTemplate<String, Object> redisTemplate;
 
+    /** 与 SecurityConfig.permitAll 保持一致：精确匹配 + AntPathMatcher，禁止 substring（/pay 会误放行 /payXxx） */
+    private static final AntPathMatcher MATCHER = new AntPathMatcher();
+
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return path.contains("/pay") || path.contains("/pay-by-order-no");
+        return MATCHER.match("/api/order/**/pay", path)
+                || "/api/order/pay-by-order-no".equals(path);
     }
 
     @Override
@@ -39,7 +47,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 writeUnauthorized(response, "Token已失效");
                 return;
             }
-            request.setAttribute("userId", JwtUtil.getUserId(token));
+            Long userId = JwtUtil.getUserId(token);
+            request.setAttribute("userId", userId);
+
+            // 填充 SecurityContext：否则 SecurityConfig 的 .authenticated() 永不通过，授权层形同虚设
+            UsernamePasswordAuthenticationToken authentication =
+                    new UsernamePasswordAuthenticationToken(userId, null,
+                            java.util.Collections.singletonList(new SimpleGrantedAuthority("ROLE_USER")));
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+
             filterChain.doFilter(request, response);
         } catch (Exception e) {
             writeUnauthorized(response, "Token无效");

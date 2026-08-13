@@ -8,10 +8,16 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 秒杀服务 JWT 鉴权过滤器
@@ -53,16 +59,23 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             request.setAttribute("userId", userId);
             // 角色一并写入，供 warm-up 等管理接口做 ADMIN 校验
             Claims claims = JwtUtil.parseToken(token);
-            request.setAttribute("role", claims.get("role", String.class));
+            String role = claims.get("role", String.class);
+            request.setAttribute("role", role);
+
+            // 填充 SecurityContext：否则 SecurityConfig 的 .authenticated() 永不通过，授权层形同虚设
+            List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+            authorities.add(new SimpleGrantedAuthority("ROLE_USER"));
+            if ("ADMIN".equals(role) || "SUPER_ADMIN".equals(role)) {
+                authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
+            }
+            UsernamePasswordAuthenticationToken authentication =
+                    new UsernamePasswordAuthenticationToken(userId, null, authorities);
+            SecurityContextHolder.getContext().setAuthentication(authentication);
+
             filterChain.doFilter(request, response);
         } catch (Exception e) {
             writeUnauthorized(response, "Token无效或已过期");
         }
-    }
-
-    private boolean isPublicPath(String path) {
-        return path.contains("/api/seckill/activities") ||
-               path.contains("/api/seckill/stock/");
     }
 
     private void writeUnauthorized(HttpServletResponse response, String msg) throws IOException {
