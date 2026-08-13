@@ -73,30 +73,48 @@ curl -s -X POST http://localhost:8080/api/product/search -H "Content-Type: appli
 
 ## 3. 订单流程
 
-### 创建订单
+### 创建订单（记为订单 A）
 
 ```bash
 curl -s -X POST http://localhost:8080/api/order -H "Content-Type: application/json" -H "Authorization: Bearer %TOKEN%" -d "{\"items\":[{\"skuId\":1,\"quantity\":1}]}"
 ```
 
-### 查询订单
+返回 `data.id` 为订单 A 的 id、`data.orderNo` 为订单号。
+
+### 查询订单（订单 A）
 
 ```bash
-curl -s http://localhost:8080/api/order/1 -H "Authorization: Bearer %TOKEN%"
+curl -s http://localhost:8080/api/order/<订单A的id> -H "Authorization: Bearer %TOKEN%"
 ```
 
 ```bash
 curl -s "http://localhost:8080/api/order/page?page=1&size=10" -H "Authorization: Bearer %TOKEN%"
 ```
 
-### 模拟支付
+### 取消订单（订单 A，须在待支付状态）
+
+> ⚠️ 状态机只允许「待支付」订单取消；**已支付订单取消会返回 `3002 订单状态异常`**（退款属另一流程）。取消成功会 Feign 恢复库存。
+
+```bash
+curl -s -X POST http://localhost:8080/api/order/<订单A的id>/cancel -H "Authorization: Bearer %TOKEN%" -d "reason=不想要了"
+```
+
+### 再创建订单（记为订单 B，用于支付演示）
+
+> 订单 A 已取消，支付演示需要一笔「待支付」订单，因此再下一单。
+
+```bash
+curl -s -X POST http://localhost:8080/api/order -H "Content-Type: application/json" -H "Authorization: Bearer %TOKEN%" -d "{\"items\":[{\"skuId\":1,\"quantity\":1}]}"
+```
+
+### 模拟支付（订单 B）
 
 > 回调必须带 `createPay` 签发的 HMAC 签名（sign 覆盖 payNo|tradeNo|trade_status|total_amount），否则验签失败返回 `failure`。
 
-**Step 1：创建支付单**（接口是 `POST /api/payment`，不是 /create）
+**Step 1：创建支付单**（接口是 `POST /api/payment`，不是 /create；orderNo 填订单 B 的订单号）
 
 ```bash
-curl -s -X POST http://localhost:8080/api/payment -H "Content-Type: application/json" -H "Authorization: Bearer %TOKEN%" -d "{\"orderNo\":\"订单号\",\"amount\":8999.00}"
+curl -s -X POST http://localhost:8080/api/payment -H "Content-Type: application/json" -H "Authorization: Bearer %TOKEN%" -d "{\"orderNo\":\"<订单B的orderNo>\",\"amount\":8999.00}"
 ```
 
 返回 `data.payForm` 是一个 HTML 表单，里面含 `out_trade_no / trade_no / trade_status / total_amount / sign` 五个字段。
@@ -107,13 +125,7 @@ curl -s -X POST http://localhost:8080/api/payment -H "Content-Type: application/
 curl -s -X POST "http://localhost:8080/api/payment/notify" -H "Content-Type: application/x-www-form-urlencoded" -d "out_trade_no=<payNo>&trade_no=<tradeNo>&trade_status=TRADE_SUCCESS&total_amount=<金额>&sign=<sign>"
 ```
 
-返回 `success` 后订单状态变为「已支付」（幂等：重复回调返回 success 不重复处理）。
-
-### 取消订单
-
-```bash
-curl -s -X POST http://localhost:8080/api/order/1/cancel -H "Authorization: Bearer %TOKEN%" -d "reason=不想要了"
-```
+返回 `success` 后订单 B 状态变为「已支付」（幂等：重复回调返回 success 不重复处理）。
 
 ---
 
