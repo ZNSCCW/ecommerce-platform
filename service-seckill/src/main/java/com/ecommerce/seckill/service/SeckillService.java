@@ -9,10 +9,12 @@ import com.ecommerce.seckill.dto.SeckillRequest;
 import com.ecommerce.seckill.dto.SeckillResponse;
 import com.ecommerce.seckill.entity.SeckillActivity;
 import com.ecommerce.seckill.entity.SeckillOrder;
+import com.ecommerce.seckill.entity.SeckillOutbox;
 import com.ecommerce.seckill.entity.SeckillProduct;
 import com.ecommerce.seckill.feign.ProductFeignClient;
 import com.ecommerce.seckill.mapper.SeckillActivityMapper;
 import com.ecommerce.seckill.mapper.SeckillOrderMapper;
+import com.ecommerce.seckill.mapper.SeckillOutboxMapper;
 import com.ecommerce.seckill.mapper.SeckillProductMapper;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -57,6 +59,11 @@ public class SeckillService {
     private final SeckillOrderMapper orderMapper;
     private final ProductFeignClient productFeignClient;
     private final com.ecommerce.seckill.config.SeckillConfigCache configCache;
+    private final SeckillOutboxMapper outboxMapper;
+
+    /** 是否走本地消息表（Outbox）异步投递；false 时退回原来的同步 syncSend */
+    @Value("${seckill.outbox.enabled:true}")
+    private boolean outboxEnabled;
 
     /** Lua 脚本缓存 */
     private DefaultRedisScript<Long> stockLuaScript;
@@ -199,10 +206,31 @@ public class SeckillService {
             // 6. 标记已下单（Redis，防止重复提交）
             redisTemplate.opsForValue().set(orderedKey, "1", 30, TimeUnit.MINUTES);
 
-            // 7. 发送 MQ 消息异步创建订单
+            // 7. 异步建单：写本地消息表（Outbox），由 SeckillOutboxPublisher 异步投递 MQ。
+            //    请求线程不再等 MQ 回执；写库失败会回补 Redis 库存，投递失败由 publisher 重试/补偿。
             String msgBody = activityId + ":" + skuId + ":" + userId + ":" + seckillProduct.getSeckillPrice();
-            rocketMQTemplate.syncSend("seckill-order-topic",
-                    MessageBuilder.withPayload(msgBody).build());
+            if (outboxEnabled) {
+                try {
+                    SeckillOutbox outbox = new SeckillOutbox();
+                    outbox.setActivityId(activityId);
+                    outbox.setSkuId(skuId);
+                    outbox.setUserId(userId);
+                    outbox.setPayload(msgBody);
+                    outbox.setStatus(SeckillOutbox.PENDING);
+                    outbox.setRetryCount(0);
+                    outbox.setCreatedAt(LocalDateTime.now());
+                    outbox.setUpdatedAt(LocalDateTime.now());
+                    outboxMapper.insert(outbox);
+                } catch (Exception e) {
+                    // 本地消息都没写进去：撤销 Redis 侧的扣减与标记，让用户还能重试
+                    compensateRedis(stockKey, limitKey, orderedKey);
+                    log.error("[seckill] 写本地消息表失败, 已回补库存: userId={}, activityId={}", userId, activityId, e);
+                    throw new BusinessException(ResultCode.FAILED);
+                }
+            } else {
+                rocketMQTemplate.syncSend("seckill-order-topic",
+                        MessageBuilder.withPayload(msgBody).build());
+            }
 
             // 返回排队成功
             return SeckillResponse.builder()
@@ -217,8 +245,20 @@ public class SeckillService {
         }
     }
 
-    // ==================== 查询秒杀活动 ====================
+    /**
+     * Redis 侧回滚：库存 +1，并清掉限购/已购标记，保证「扣了库存但没建单」不会把用户卡死。
+     */
+    private void compensateRedis(String stockKey, String limitKey, String orderedKey) {
+        try {
+            redisTemplate.opsForValue().increment(stockKey);
+            redisTemplate.delete(limitKey);
+            redisTemplate.delete(orderedKey);
+        } catch (Exception e) {
+            log.error("[seckill] Redis 回补失败，需人工核对: stockKey={}", stockKey, e);
+        }
+    }
 
+    // ==================== 查询秒杀活动 ====================
     public List<SeckillActivity> getActiveActivities() {
         return activityMapper.findActiveActivities(LocalDateTime.now());
     }

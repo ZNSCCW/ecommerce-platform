@@ -313,3 +313,18 @@ CREATE TABLE IF NOT EXISTS `t_pay_record` (
   KEY `idx_trade_no` (`trade_no`),
   KEY `idx_user_id` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付流水表';
+
+-- 秒杀本地消息表（Transactional Outbox）
+CREATE TABLE IF NOT EXISTS `t_seckill_outbox` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `activity_id` bigint NOT NULL,
+  `sku_id` bigint NOT NULL,
+  `user_id` bigint NOT NULL,
+  `payload` varchar(255) NOT NULL COMMENT 'MQ 消息体: activityId:skuId:userId:price',
+  `status` tinyint NOT NULL DEFAULT '0' COMMENT '0=待投递 1=已投递 2=失败已补偿',
+  `retry_count` int NOT NULL DEFAULT '0',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_status_id` (`status`,`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='秒杀本地消息表';
