@@ -361,6 +361,8 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 | 秒杀下单 · 200 并发（+ 配置本地缓存） | 200 | 577 | 339 ms | 589 ms | 0% | 热点路径 DB 查询 3→0，吞吐无变化 |
 | 秒杀下单 · 200 并发（配置缓存复测） | 200 | 635 | 312 ms | 478 ms | 0% | 同上，波动范围内 |
 | 秒杀下单 · 200 并发（配置缓存 + 关锁） | 200 | 545 | 362 ms | 2074 ms | 0% | 锁仍不是瓶颈 |
+| 秒杀下单 · 200 并发（Outbox 异步投递） | 200 | 449 | 441 ms | 1774 ms | 0% | 5000 单落库、outbox 0 残留 |
+| 秒杀下单 · 200 并发（Outbox 复测） | 200 | 677 | 291 ms | 458 ms | 0% | 同上，本轮最佳 |
 | 全链路混合 | — | 未测 | — | — | — | 依赖 ES，本轮未起 |
 
 ### 压测发现并修复的问题
@@ -405,6 +407,15 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 - 实测：577 / 635 TPS，与不做缓存的 602 在同一水平；
 - 说明 200 并发下瓶颈已经不在 DB 查询次数，而在 MQ 消费端的资源竞争与单实例网关；
 - 缓存仍然保留：它把热点路径的数据库查询从 3 次降到 0 次，**降低 DB 压力**，只是在这个并发量级上还没成为吞吐瓶颈。
+
+**6. 本地消息表（Outbox）异步投递：吞吐不变，但补上了一致性缺口**
+
+秒杀请求不再同步等 MQ 回执，改为写 `t_seckill_outbox` 后立即返回，后台每 200ms 批量投递（`SeckillOutboxPublisher`）：
+投递失败重试 10 次，仍失败则 `status=2` 并回补 Redis 库存 + 清除限购标记。
+
+- 实测：449 / 677 TPS，与同步 `syncSend` 的 440~635 同一区间 —— 省下的 MQ 回执时间被「写 outbox 的那次 DB insert」抵消；
+- 但换来了两件事：**请求线程不再依赖 MQ 可用性**，以及之前「扣了库存但没订单」的缺口有了补偿路径；
+- 验证：两轮各 5000 条 outbox 全部 `status=1`、0 pending、0 failed，订单表 5000 条。
 
 > 复现：`docs/benchmark.md` §4；原始报告在 `tools/loadtest/results/`（已 gitignore）。
 

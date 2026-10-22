@@ -107,6 +107,8 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 1000 --concurr
 | 200（+ 配置本地缓存，DB 查询 3→0） | 5000 | 5000 | 0 | 0 | 577 | 339 ms | 589 ms | ✅ 5000 = 库存消耗 |
 | 200（配置缓存复测） | 5000 | 5000 | 0 | 0 | 635 | 312 ms | 478 ms | ✅ 5000 = 库存消耗 |
 | 200（配置缓存 + 关锁） | 5000 | 5000 | 0 | 0 | 545 | 362 ms | 2074 ms | ✅ 5000 = 库存消耗 |
+| 200（+ Outbox 异步投递） | 5000 | 5000 | 0 | 0 | 449 | 441 ms | 1774 ms | ✅ outbox 5000 条全 success |
+| 200（Outbox 复测） | 5000 | 5000 | 0 | 0 | 677 | 291 ms | 458 ms | ✅ 同上 |
 
 结论：**瓶颈是 MyBatis 的 stdout SQL 打印，不是连接池、不是分布式锁、也不是 DB 查询次数**。
 Hikari 10→80 只把 P99 从 6.8s 砍到 3.2s、吞吐不动；关掉 StdOutImpl 后吞吐 5 倍；
@@ -233,14 +235,20 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 下一层要查的是 MQ 消费端（5000 条消息并发 Feign 扣库存，和 API 线程抢 CPU/连接）、
 单实例网关与压测客户端自身的排队。这三项需要独立压测机或更细的埋点才能干净地区分。
 
-### 7.4 未修复：扣库存与建单之间没有补偿（一致性缺口）
+### 7.4 已修复：扣库存与建单之间的一致性缺口（本地消息表）
 
-真实 SKU 库存被前几轮压测耗尽后，消费端 `deductStock` 失败 → 消息重试 16 次进死信，
-但 **Redis 库存已扣、用户已收到「排队中」**，最终既没有订单也不回补库存（那一轮 5000 消耗 vs 4998 成功）。
+原实现里「Redis 扣减 → `syncSend`」在同一个请求里，消息发不出去时库存已经扣了、用户还收到「排队中」。
+真实 SKU 库存耗尽的那轮压测就复现了：5000 消耗 vs 4998 成功，2 单既无订单也不回补。
 
-- 根因不是 Lua，而是「Redis 扣减 → MQ 发送 → 消费建单」之间缺最终一致兜底；
-- 建议：本地消息表 / RocketMQ 事务消息；消费失败回滚 Redis 库存或写补偿表；
-  或活动开始前校验 `Redis 库存 ≤ 真实 SKU 库存`，避免「秒杀成功但真实库存不够」。
+**改法（Transactional Outbox）**：
+1. 请求线程只做 Redis 扣减 + 写 `t_seckill_outbox`（`status=0`），立即返回「排队中」；
+2. `SeckillOutboxPublisher` 每 200ms 捞 200 条 PENDING 投递 MQ，成功置 `status=1`；
+3. 投递失败 `retry_count+1`，超过 10 次置 `status=2`，并回补 Redis 库存 + 清除限购/已购标记；
+4. 写 outbox 本身失败 → 立即回补 Redis（`compensateRedis`），用户可重试。
+
+**实测**：449 / 677 TPS，与同步 `syncSend`（440~635）同一区间 —— 省下的 MQ 回执被多出的一次 DB insert 抵消；
+但两轮 outbox 5000 条全部投递成功、0 pending、0 failed，订单 5000 条，
+**请求线程不再依赖 MQ 可用性，一致性缺口有了兜底**。
 
 
 ---
