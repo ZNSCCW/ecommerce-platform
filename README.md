@@ -353,21 +353,46 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 | 商品详情 · 缓存失效（修复前） | 64 | 99 | 642 ms | 1139 ms | 0% | 每请求都走 Redisson 锁 + DB，见下方复盘 |
 | 商品详情 · 冷缓存（修复后） | 64 | 1618 | 39.5 ms | 576 ms | 0% | 1000 条商品随机 id，首访回源 |
 | 商品详情 · 热缓存（修复后） | 64 | 2385 | 26.8 ms | 44 ms | 0% | 缓存命中，P99 较修复前降 25 倍 |
-| 秒杀下单 · 300 并发（Hikari=10） | 300 | 79 | 3718 ms | 6837 ms | 0% | 5000 用户 / 库存 5000 / 5000 单落库 / 0 超卖 |
-| 秒杀下单 · 200 并发（Hikari=30） | 200 | 89 | 2235 ms | 3579 ms | 0% | 同上；连接池调大后 P99 减半，吞吐仍卡在 ~90 |
+| 秒杀下单 · 300 并发（基线） | 300 | 79 | 3718 ms | 6837 ms | 0% | 5000 用户 / 库存 5000 / 5000 单落库 / 0 超卖 |
+| 秒杀下单 · 200 并发（调大 Hikari 10→80） | 200 | 88 | 2252 ms | 3222 ms | 0% | 连接池不是瓶颈，吞吐仍 ~90 |
+| 秒杀下单 · 200 并发（关闭 StdOutImpl 后） | 200 | 447 | 443 ms | 2632 ms | 0% | 同一台机、同一份数据，**5 倍提升** |
+| 秒杀下单 · 200 并发（复测） | 200 | 602 | 331 ms | 669 ms | 0% | 0 错误、0 重复、5000 单落库 |
+| 秒杀下单 · 200 并发（再关 Redisson 锁） | 200 | 440 | 450 ms | 2481 ms | 0% | 无提升，锁不是瓶颈，保持默认开启 |
 | 全链路混合 | — | 未测 | — | — | — | 依赖 ES，本轮未起 |
 
 ### 压测发现并修复的问题
 
-**商品详情缓存从未命中**（P0，2026-10-22 压测发现）：`RedisConfig` 用 `Jackson2JsonRedisSerializer<Object>`，写入是 JSON、读出是 `String`/`LinkedHashMap`，
+**1. MyBatis 用 `StdOutImpl` 打印 SQL，`System.out` 全局锁把线程串行化（P0，提升 5 倍）**
+
+`application.yml` 里 `log-impl: org.apache.ibatis.logging.stdout.StdOutImpl`，每条 SQL 都 `System.out.println`；
+线程 dump 里 200 个 Tomcat 线程有 128 个停在 `PrintStream.writeln`（MyBatis `StdOutImpl.debug`），
+剩下 72 个在等 Hikari 连接 —— 数据库其实是空的（`Slow_queries=0`），线程全在排队打日志。
+
+- 调大 Hikari 10→30→80 完全无效（79 / 89 / 88 TPS），因为序列化点是 stdout 不是 DB；
+- 关掉 StdOutImpl 后同一场景 **88 → 447 TPS**，复测 602 TPS / P99 669ms；
+- 修复：5 个服务的 `log-impl` 改为 `Slf4jImpl`（SQL 日志交给日志框架，按级别控制）。
+
+**2. 商品详情缓存从未命中（P0）**
+
+`RedisConfig` 用 `Jackson2JsonRedisSerializer<Object>`，写入是 JSON、读出是 `String`/`LinkedHashMap`，
 `ProductCacheService.getSpuCache` 里 `instanceof SpuVO` 永远不成立，于是每个请求都「判定脏数据 → 删缓存 → 加分布式锁 → 查库」。
 
-- 证据：压测 10s/1051 请求，Redis `EVAL`（Redisson 锁）增加 2520 次、`SET` 增加 1252 次，即**每请求 2.4 次加锁脚本**；
+- 证据：压 10s/1051 请求，Redis `EVAL`（Redisson 锁）增加 2520 次、`SET` 增加 1252 次，即**每请求 2.4 次加锁脚本**；
 - 修复：`getSpuCache` 对 `String` / `Map` 做反序列化兜底；
 - 效果：同 8 线程 QPS 104 → 449，64 线程热缓存 2385 QPS、P99 44ms。
 
-**秒杀链路瓶颈**：每请求 3 次 DB 查询（活动、秒杀商品、`count(*)`）+ Redisson 加锁 + `syncSend` 同步等 MQ 回执。
-调大 Hikari（10→30）只把 P99 从 6.8s 降到 3.6s，吞吐仍 ~90 TPS，说明瓶颈不在连接池，而在同步调用链本身。
+**3. 扣库存与建单之间没有补偿（一致性缺口，未修）**
+
+一轮压测里真实 SKU 库存被前几轮耗尽，消费端 `deductStock` 失败 → 消息重试 16 次进死信；
+但 Redis 库存已经扣掉、用户已收到「排队中」，最终既没订单也不退库存。
+
+- 这不是 Lua 的问题，而是「Redis 扣减 → MQ 发送 → 消费建单」之间缺最终一致兜底；
+- 建议：本地消息表 / RocketMQ 事务消息，消费失败回滚 Redis 库存或落补偿表；或秒杀活动前校验 Redis 库存 ≤ 真实 SKU 库存。
+
+**4. Redisson 锁：压测证明可以不动**
+
+关掉每用户分布式锁（`-Dseckill.lock.enabled=false`）后 440 TPS，与开启时 447/602 在噪声范围内；
+限购本来就由 Lua 的 `KEYS[2]` 原子保证，所以这把锁只增加两次 Redis 往返，不带来收益 —— 但也不值得为它改代码，保持默认开启。
 
 > 复现：`docs/benchmark.md` §4；原始报告在 `tools/loadtest/results/`（已 gitignore）。
 

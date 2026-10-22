@@ -98,8 +98,15 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 1000 --concurr
 
 | 并发 | 总请求 | 成功 | 4003 重复 | 5xx | TPS | Avg RT | P99 | 超卖校验 |
 |------|--------|------|-----------|-----|-----|--------|-----|----------|
-| 300（Hikari=10） | 5000 | 5000 | 0 | 0 | 79.3 | 3718 ms | 6837 ms | ✅ 5000 = 库存消耗 |
+| 300（Hikari=10，StdOutImpl 开着） | 5000 | 5000 | 0 | 0 | 79.3 | 3718 ms | 6837 ms | ✅ 5000 = 库存消耗 |
 | 200（Hikari=30） | 5000 | 5000 | 0 | 0 | 89.0 | 2235 ms | 3579 ms | ✅ 5000 = 库存消耗 |
+| 200（Hikari=80） | 5000 | 5000 | 0 | 0 | 88.3 | 2252 ms | 3222 ms | ✅ 5000 = 库存消耗 |
+| 200（关 StdOutImpl，Hikari=30） | 5000 | 5000 | 0 | 0 | **447** | 443 ms | 2632 ms | ✅ 5000 = 库存消耗 |
+| 200（关 StdOutImpl，复测） | 5000 | 5000 | 0 | 0 | **602** | 331 ms | 669 ms | ✅ 5000 = 库存消耗 |
+| 200（再关 Redisson 锁） | 5000 | 5000 | 0 | 0 | 440 | 450 ms | 2481 ms | ✅ 5000 = 库存消耗 |
+
+结论：**瓶颈是 MyBatis 的 stdout SQL 打印，不是连接池也不是分布式锁**。
+Hikari 从 10 调到 80 只把 P99 从 6.8s 砍到 3.2s、吞吐不动；关掉 StdOutImpl 后吞吐直接 5 倍。
 
 两轮都是 0 错误、0 重复、5000 条订单全部落库（`SELECT COUNT(*) FROM db_seckill.t_seckill_order` = 5000）。
 
@@ -165,7 +172,28 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 
 ## 7. 压测发现的问题 & 已知瓶颈（读源码得出，压测时逐条验证）
 
-### 7.1 已修复：商品详情缓存从未命中（P0，2026-10-22 实测发现）
+### 7.1 已修复：MyBatis `StdOutImpl` 打印 SQL，`System.out` 全局锁把线程串行化（P0，提升 5 倍）
+
+**现象**：Hikari 从 10 调到 80，TPS 一直卡在 79~89，P99 从 6.8s 只降到 3.2s，怎么调都没用。
+
+**定位**：对 seckill 服务连续打 4 次线程 dump（`jcmd Thread.print`），202 个 Tomcat 线程分布：
+
+| 状态 | 线程数 | 栈顶 |
+|------|--------|------|
+| 等数据库连接 | 128 | `HikariPool.getConnection` |
+| 等 `System.out` 锁 | 70 | `PrintStream.writeln` ← `MyBatis StdOutImpl.debug` |
+| 真正干活 | 3 | — |
+
+同时 MySQL `Slow_queries=0`、`PROCESSLIST` 里连接基本空闲 —— 数据库没问题，线程全在排队打 SQL 日志。
+
+**根因**：5 个服务的 `application.yml` 都写了 `log-impl: org.apache.ibatis.logging.stdout.StdOutImpl`，
+每条 SQL 走 `System.out.println`，而 `PrintStream` 是全局同步锁，200 个线程被串行化。
+
+**修复**：`log-impl` 改为 `org.apache.ibatis.logging.slf4j.Slf4jImpl`（SQL 日志交给日志框架，按级别控制）。
+
+**效果**：同一场景 **88 → 447 TPS**（复测 602 TPS / P99 669ms），错误率 0、5000 单落库、0 超卖。
+
+### 7.2 已修复：商品详情缓存从未命中（P0，2026-10-22 实测发现）
 
 **现象**：冷缓存 102.7 QPS / 热缓存 99.1 QPS，几乎没差；8 线程也只有 104 QPS。
 
@@ -180,19 +208,32 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 
 **效果**：同 8 线程 104 → 449 QPS；64 线程热缓存 2385 QPS、P99 44ms（修复前 99 QPS / P99 1139ms）。
 
-### 7.2 秒杀链路的瓶颈（实测数据支持）
+### 7.3 秒杀链路的瓶颈（实测数据支持）
 
 | # | 瓶颈 | 代码位置 | 验证方法 | 可能的优化 |
 |---|------|---------|---------|-----------|
 | 1 | 每请求 3 次 DB 查询（活动、秒杀商品、`count(*)`） | `SeckillService.seckill` 步骤 1/2/4 | MySQL Questions 增速 ≈ 请求数 × 3 | 活动+商品配置进 Caffeine 本地缓存；`count(*)` 改成 Redis 计数 |
-| 2 | `syncSend` 在请求线程里同步等 MQ 回执 | `SeckillService` 步骤 7 | MQ Dashboard 堆积上升时 RT 同步上升 | 改 `asyncSend` + 本地失败重试表 |
-| 3 | Redisson `tryLock` 每请求一次往返，同 key 竞争 | 步骤 3 | 并发越高，`seckill:lock` 争抢越明显 | 限购已由 Lua 保证，锁可退化为 `SETNX` 短 TTL |
-| 4 | 单实例网关 + Tomcat 默认 200 线程 | gateway | 并发 > 300 后 P99 陡增、TPS 不再涨 | 加实例 / 调 `server.tomcat.threads.max` |
-| 5 | 秒杀链路的 `@SecurityContext` + 过滤器链开销 | `JwtAuthFilter` | 对比直连 8084 与走 8080 的 RT 差 | 网关统一鉴权，下游服务内网直连免鉴权 |
+| 2 | `syncSend` 在请求线程里同步等 MQ 回执 | `SeckillService` 步骤 7 | 线程 dump 里能看到线程停在 `RocketMQTemplate.syncSend` | 改 `asyncSend` + 本地失败重试表 / 事务消息 |
+| 3 | Redisson `tryLock` 每请求两次往返 | 步骤 3 | 关掉后 440 TPS vs 开启 447/602，**无差异** | 不必改；限购由 Lua 保证 |
+| 4 | 单实例网关 + Tomcat 默认 200 线程 | gateway | 并发 > 200 后 P99 陡增 | 加实例 / 调 `server.tomcat.threads.max` |
+| 5 | 过滤器链 + `JwtAuthFilter` 开销 | `JwtAuthFilter` | 对比直连 8084 与走 8080 的 RT 差 | 网关统一鉴权 |
 
-**实测结论**：300 并发（Hikari=10）79 TPS / P99 6.8s；把 Hikari 调到 30、并发降到 200，
-89 TPS / P99 3.6s —— **调连接池只能把 P99 砍半，吞吐几乎不动**，说明瓶颈在同步调用链（第 1/2/3 条），
-不在连接池。下一步要动的是：活动/商品配置本地缓存 + MQ 改异步发送。
+**实测结论**：真正的瓶颈是第 0 条（日志），不是连接池、不是锁。修完之后：
+- Hikari 10→30→80：79 / 89 / 88 TPS，**无效**；
+- 关掉 Redisson 锁：440 TPS，**无提升**（噪声内）；
+- 关掉 StdOutImpl：447 TPS，复测 602 TPS，**唯一有效且成本最低的改动**。
+
+下一层要量化的是 `syncSend` 与 3 次 DB 查询（第 1/2 条），需要先把压测客户端与网关的排队因素排除，再上 Caffeine 本地缓存。
+
+### 7.4 未修复：扣库存与建单之间没有补偿（一致性缺口）
+
+真实 SKU 库存被前几轮压测耗尽后，消费端 `deductStock` 失败 → 消息重试 16 次进死信，
+但 **Redis 库存已扣、用户已收到「排队中」**，最终既没有订单也不回补库存（那一轮 5000 消耗 vs 4998 成功）。
+
+- 根因不是 Lua，而是「Redis 扣减 → MQ 发送 → 消费建单」之间缺最终一致兜底；
+- 建议：本地消息表 / RocketMQ 事务消息；消费失败回滚 Redis 库存或写补偿表；
+  或活动开始前校验 `Redis 库存 ≤ 真实 SKU 库存`，避免「秒杀成功但真实库存不够」。
+
 
 ---
 
