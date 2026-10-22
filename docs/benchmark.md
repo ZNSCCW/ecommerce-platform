@@ -115,7 +115,7 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 1000 --concurr
 
 结论：**瓶颈是 MyBatis 的 stdout SQL 打印，不是连接池、不是分布式锁、也不是 DB 查询次数**。
 Hikari 10→80 只把 P99 从 6.8s 砍到 3.2s、吞吐不动；关掉 StdOutImpl 后吞吐 5 倍；
-此后把热点路径 DB 查询从 3 次降到 0 次（配置本地缓存）吞吐仍在 550~635 波动。
+此后把热点路径 DB 查询从 3 次降到 0 次（配置本地缓存）吞吐仍在 550–635 波动。
 下一步要往 MQ 消费端与单实例网关/客户端排队方向查，而不是继续减 SQL。
 
 **读这张表要注意三点**：
@@ -155,16 +155,16 @@ Hikari 10→80 只把 P99 从 6.8s 砍到 3.2s、吞吐不动；关掉 StdOutImp
 | 400 | 1288 | 1235.9 | 4.2% |
 | 600 | 1302 | 1242.0 | 4.8% |
 
-低并发吻合得很好，高并发偏差约 4~5%，主要来自压测客户端 600 个 Python 线程的调度开销与统计窗口，
+低并发吻合得很好，高并发偏差约 4–5%，主要来自压测客户端 600 个 Python 线程的调度开销与统计窗口，
 不影响容量结论。
 
 > ⚠️ **这组和前一张表不能混用**：梯度是在精简环境（只起 redis / nacos / rmq，未起 ES / Kibana / dashboard，
-> 内存更宽裕）下测的，绝对值高于前面带全量中间件、内存只剩 1.5G 时的那一系列（447~677 TPS）。
+> 内存更宽裕）下测的，绝对值高于前面带全量中间件、内存只剩 1.5G 时的那一系列（447–677 TPS）。
 > 具体是「内存」还是「ES/Kibana 的 CPU 占用」贡献更大，没做隔离实验，**只是推断**。
 > 同一组内的四档才可比。想复现这张表：只启动 redis / nacos / rmq 四个容器，
 > 用 `tools/loadtest/README.md` 里的命令，固定 `--users 5000`、改 `--concurrency`。
 
-**一次未能定因的失败（如实记录）**：最初按「N 用户 = N 线程」跑 500 并发，出现 36~40 个 HTTP 500。
+**一次未能定因的失败（如实记录）**：最初按「N 用户 = N 线程」跑 500 并发，出现 36–40 个 HTTP 500。
 
 - 特征：响应体是 Spring 默认错误页（没有业务 `code`）、客户端侧没有「网络异常」记录、
   库存未被扣减，网关日志是 `Connection refused: getsockopt` —— 请求死在「网关 → 秒杀服务」建连阶段；
@@ -249,7 +249,7 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 
 ### 7.1 已修复：MyBatis `StdOutImpl` 打印 SQL，`System.out` 全局锁把线程串行化（P0，提升 5 倍）
 
-**现象**：Hikari 从 10 调到 80，TPS 一直卡在 79~89，P99 从 6.8s 只降到 3.2s，怎么调都没用。
+**现象**：Hikari 从 10 调到 80，TPS 一直卡在 79–89，P99 从 6.8s 只降到 3.2s，怎么调都没用。
 
 **定位**：对 seckill 服务连续打 4 次线程 dump（`jcmd Thread.print`），取一张快照，201 个 Tomcat 线程分布：
 
@@ -315,7 +315,7 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 3. 投递失败 `retry_count+1`，超过 10 次置 `status=2`，并回补 Redis 库存 + 清除限购/已购标记；
 4. 写 outbox 本身失败 → 立即回补 Redis（`compensateRedis`），用户可重试。
 
-**实测**：449 / 677 TPS，与同步 `syncSend`（440~635）同一区间 —— 省下的 MQ 回执被多出的一次 DB insert 抵消；
+**实测**：449 / 677 TPS，与同步 `syncSend`（440–635）同一区间 —— 省下的 MQ 回执被多出的一次 DB insert 抵消；
 但两轮 outbox 5000 条全部投递成功、0 pending、0 failed，订单 5000 条，
 **请求线程不再依赖 MQ 可用性，一致性缺口有了兜底**。
 

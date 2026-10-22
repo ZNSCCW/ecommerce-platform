@@ -52,7 +52,7 @@ docker exec ecommerce-redis sh -c "redis-cli --scan --pattern 'seckill:ordered:*
 python tools/loadtest/seckill_bench.py --users 5000 --pool demo --bootstrap-only
 ```
 
-5000 个用户要过 bcrypt，本机大约 30~60s，一次就好。
+5000 个用户要过 bcrypt，本机大约 30–60s，一次就好。
 
 ### 4. 正式压测
 
@@ -61,7 +61,7 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 5000 --concurr
 ```
 
 - `--users`：独立用户数 = 请求数
-- `--concurrency`：同时起跑的线程数（建议 200~500；再高是拿压测器 CPU 换被测服务 CPU）
+- `--concurrency`：同时起跑的线程数（建议 200–500；再高是拿压测器 CPU 换被测服务 CPU）
 - `--pool demo --reuse`：复用上一步的用户，重新登录刷新 token
 - `--stock 5000`：用于校验，写错会提示
 
@@ -88,7 +88,7 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 5000 --concurr
 ```powershell
 # 灌 1000 条商品（init.sql 只有 1 条，只压 1 个 id 会把缓存收益放大）
 mysql -uroot -p123456 < tools/loadtest/sql/seed-products.sql
-# 灌入的 id 是 2001~3000，压测时要显式指定范围（默认 1~1000 会全是 2001 商品不存在）
+# 灌入的 id 是 2001–3000，压测时要显式指定范围（默认 1–1000 会全是 2001 商品不存在）
 
 # 冷缓存组：先清缓存再压（⚠️ FLUSHDB 会连秒杀库存一起清，压完记得重新预热）
 docker exec ecommerce-redis redis-cli FLUSHDB
