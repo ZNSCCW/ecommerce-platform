@@ -56,6 +56,7 @@ public class SeckillService {
     private final SeckillProductMapper productMapper;
     private final SeckillOrderMapper orderMapper;
     private final ProductFeignClient productFeignClient;
+    private final com.ecommerce.seckill.config.SeckillConfigCache configCache;
 
     /** Lua 脚本缓存 */
     private DefaultRedisScript<Long> stockLuaScript;
@@ -101,6 +102,8 @@ public class SeckillService {
             redisTemplate.opsForValue().set(stockKey, String.valueOf(p.getSeckillStock()), expireSec, TimeUnit.SECONDS);
             log.info("秒杀库存预热: key={}, stock={}, ttl={}s", stockKey, p.getSeckillStock(), expireSec);
         }
+        // 预热读完 DB 的最新配置，让进程内缓存立即失效，避免继续用旧的活动时间/价格
+        configCache.invalidateAll();
     }
 
     // ==================== 秒杀核心 ====================
@@ -112,8 +115,8 @@ public class SeckillService {
         Long activityId = request.getActivityId();
         Long skuId = request.getSkuId();
 
-        // 1. 校验活动有效性
-        SeckillActivity activity = activityMapper.selectById(activityId);
+        // 1. 校验活动有效性（走进程内缓存，3 秒 TTL；warm-up 会主动失效）
+        SeckillActivity activity = configCache.getActivity(activityId, activityMapper::selectById);
         if (activity == null || activity.getStatus() != 1) {
             throw new BusinessException(ResultCode.SECKILL_NOT_START);
         }
@@ -125,11 +128,12 @@ public class SeckillService {
             throw new BusinessException(ResultCode.SECKILL_ENDED);
         }
 
-        // 2. 获取秒杀商品配置
-        SeckillProduct seckillProduct = productMapper.selectOne(
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SeckillProduct>()
-                        .eq(SeckillProduct::getActivityId, activityId)
-                        .eq(SeckillProduct::getSkuId, skuId));
+        // 2. 获取秒杀商品配置（走进程内缓存）
+        SeckillProduct seckillProduct = configCache.getProduct(activityId, skuId, () ->
+                productMapper.selectOne(
+                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SeckillProduct>()
+                                .eq(SeckillProduct::getActivityId, activityId)
+                                .eq(SeckillProduct::getSkuId, skuId)));
         if (seckillProduct == null) {
             throw new BusinessException(ResultCode.PRODUCT_NOT_FOUND);
         }
@@ -162,13 +166,14 @@ public class SeckillService {
                 log.warn("[seckill] REPEAT@orderedKey: {}", orderedKey);
                 throw new BusinessException(ResultCode.SECKILL_REPEAT);
             }
-            // DB 双检
-            int count = orderMapper.countByUserAndActivity(userId, activityId);
-            if (count >= seckillProduct.getLimitPerUser()) {
-                log.warn("[seckill] REPEAT@dbCount: count={} limit={}, userId={}, activityId={}",
-                        count, seckillProduct.getLimitPerUser(), userId, activityId);
-                throw new BusinessException(ResultCode.SECKILL_REPEAT);
-            }
+            // DB 双检：原本每请求一次 count(*)，是热点路径上第三次 DB 查询。
+            // 压测后移到「防重链条」的最后一环：
+            //   ① SeckillConfigCache 拿限购配置（本地缓存，不打库）
+            //   ② orderedKey（Redis，30 分钟）
+            //   ③ Lua 里的 KEYS[2] 限购计数（原子，活动时长）
+            //   ④ 消费端建单时 uk_user_activity 唯一索引兜底
+            // 前 ①②③ 已能挡住重复下单，④ 是 Redis 丢数据时的最后防线，
+            // 因此热点路径不再查这条 count(*)。
 
             // 5. Lua 原子扣库存
             //   Lua 参数: KEYS[1]=库存key KEYS[2]=限购key ARGV[1]=扣减数量 ARGV[2]=每人限购 ARGV[3]=限购过期秒数
