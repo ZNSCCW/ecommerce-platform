@@ -1,5 +1,7 @@
 package com.ecommerce.product.service;
 
+import cn.hutool.core.bean.BeanUtil;
+import cn.hutool.json.JSONUtil;
 import com.ecommerce.product.dto.SpuVO;
 import com.ecommerce.product.entity.Spu;
 import org.redisson.api.RLock;
@@ -49,7 +51,21 @@ public class ProductCacheService {
             if (val instanceof SpuVO) {
                 return (SpuVO) val;
             }
-            // 类型不匹配 → 清除脏数据
+            // Jackson2JsonRedisSerializer<Object> 反序列化不带类型信息：
+            // 写进去是 JSON，读出来可能是 String 或 LinkedHashMap。
+            // 之前这里直接 delete 掉，导致缓存永远不命中、每个请求都走分布式锁+查库。
+            try {
+                if (val instanceof String str) {
+                    return JSONUtil.toBean(str, SpuVO.class);
+                }
+                if (val instanceof java.util.Map<?, ?> map) {
+                    return BeanUtil.toBean(map, SpuVO.class);
+                }
+            } catch (Exception e) {
+                redisTemplate.delete(key);
+                return null;
+            }
+            // 其他无法识别的脏数据 → 清除
             redisTemplate.delete(key);
             return null;
         }
