@@ -120,6 +120,8 @@ class Sample:
     ok: bool
     latency_ms: float
     detail: str = ""
+    # 相对压测窗口起点的偏移（秒）：用来区分「集中在开头 = 冷启动」/「全程均匀 = 资源上限」/「中间一段 = 服务瞬断」
+    ts: float = 0.0
 
 
 @dataclass
@@ -286,6 +288,22 @@ def summarize(samples: list[Sample], window_s: float) -> dict:
         buckets[s.bucket] = buckets.get(s.bucket, 0) + 1
     buckets = dict(sorted(buckets.items(), key=lambda kv: kv[1], reverse=True))
 
+    fail = [s for s in samples if not s.ok]
+    failure_profile = None
+    if fail and window_s > 0:
+        # 把失败按时间窗口均分 5 段，用来判断是冷启动(集中在开头)/资源上限(全程均匀)/服务瞬断(中间一段)
+        bins = [0] * 5
+        for s in fail:
+            idx = min(4, int(max(0.0, s.ts) / window_s * 5))
+            bins[idx] += 1
+        failure_profile = {
+            "count": len(fail),
+            "first_ts": round(min(s.ts for s in fail), 3),
+            "last_ts": round(max(s.ts for s in fail), 3),
+            "bins": bins,
+            "bin_edges": [round(window_s * i / 5, 2) for i in range(5)],
+        }
+
     return {
         "total": total,
         "success": len(ok),
@@ -295,6 +313,7 @@ def summarize(samples: list[Sample], window_s: float) -> dict:
         "latency_ms": latency_block([s.latency_ms for s in samples]),
         "success_latency_ms": latency_block([s.latency_ms for s in ok]),
         "buckets": buckets,
+        "failure_profile": failure_profile,
     }
 
 
@@ -428,15 +447,19 @@ def run_burst(cfg: Cfg, users: list[dict]) -> tuple[list[Sample], float, list[st
                     token=user["token"],
                 )
                 sample = classify(reply, "seckill")
+                sample.ts = round(time.perf_counter() - t0_ref[0], 3)
                 with lock:
                     samples.append(sample)
         finally:
             client.close()
 
+    t0_ref = [time.perf_counter()]
+
     threads = [threading.Thread(target=worker, name=f"burst-{i}", daemon=True) for i in range(workers)]
     for t in threads:
         t.start()
 
+    t0_ref[0] = time.perf_counter()
     barrier.wait()  # 起跑：所有线程同时离开闸门
     started = time.perf_counter()  # 计时从「真正开跑」开始，不含建连与线程启动
     for t in threads:
@@ -455,6 +478,7 @@ def run_loop(
     samples: list[Sample] = []
     connect_errors: list[str] = []
     lock = threading.Lock()
+    t0_ref = [0.0]
 
     def worker(index: int) -> None:
         client = Client(cfg.host, cfg.port, cfg.timeout)
@@ -467,12 +491,14 @@ def run_loop(
         try:
             while not stop.is_set():
                 sample = task(client, index)
+                sample.ts = round(time.perf_counter() - t0_ref[0], 3)
                 with lock:
                     samples.append(sample)
         finally:
             client.close()
 
     threads = [threading.Thread(target=worker, args=(i,), name=f"loop-{i}", daemon=True) for i in range(workers)]
+    t0_ref[0] = time.perf_counter()
     started = time.perf_counter()
     for t in threads:
         t.start()
@@ -624,9 +650,9 @@ def write_report(cfg: Cfg, stats: dict, extra: dict, samples: list[Sample], run_
     run_dir.mkdir(parents=True, exist_ok=True)
     with (run_dir / "raw.csv").open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh)
-        writer.writerow(["bucket", "ok", "latency_ms", "detail"])
+        writer.writerow(["ts", "bucket", "ok", "latency_ms", "detail"])
         for s in samples:
-            writer.writerow([s.bucket, int(s.ok), f"{s.latency_ms:.1f}", s.detail[:200]])
+            writer.writerow([f"{s.ts:.3f}", s.bucket, int(s.ok), f"{s.latency_ms:.1f}", s.detail[:200]])
 
     payload = {
         "scenario": cfg.scenario,
@@ -672,6 +698,27 @@ def write_report(cfg: Cfg, stats: dict, extra: dict, samples: list[Sample], run_
     for bucket, count in stats["buckets"].items():
         pct = round(count / stats["total"] * 100, 2) if stats["total"] else 0.0
         lines.append(f"| {bucket} | {count} | {pct}% |")
+
+    fp = stats.get("failure_profile")
+    if fp:
+        lines += [
+            "",
+            "## 失败时间分布（秒，窗口内均分 5 段）",
+            "",
+            "> 集中在第 1 段 = 冷启动建连风暴；全程均匀 = 资源上限；只在中间一段 = 服务瞬时不可用。",
+            "",
+            "| 区间 | 失败数 |",
+            "|------|--------|",
+        ]
+        edges = fp["bin_edges"]
+        for i, count in enumerate(fp["bins"]):
+            left = edges[i]
+            right = edges[i + 1] if i + 1 < len(edges) else stats["window_s"]
+            lines.append(f"| {left}s ~ {right}s | {count} |")
+        lines += [
+            "",
+            f"首个失败 {fp['first_ts']}s，最后一个 {fp['last_ts']}s（共 {fp['count']} 个）。",
+        ]
 
     if extra:
         labels = {

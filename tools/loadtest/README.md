@@ -71,9 +71,9 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 5000 --concurr
 
 | 文件 | 内容 |
 |------|------|
-| `summary.md` | 人读版报告，含可直接粘进 README 的一行 |
+| `summary.md` | 人读版报告：分布、失败时间分段、校验结论，含可直接粘进 README 的一行 |
 | `summary.json` | 机读版，便于多次结果对比 |
-| `raw.csv` | 每条请求的耗时与结果，可画图 |
+| `raw.csv` | 每条请求的耗时、结果与相对时间戳 `ts`，可画时间轴 |
 
 **有效性自检（三条都过，数字才能写进简历）**：
 
