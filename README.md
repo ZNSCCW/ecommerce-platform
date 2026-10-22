@@ -350,7 +350,7 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 
 | 场景 | 并发 | QPS | Avg RT | P99 RT | 错误率 | 备注 |
 |------|------|-----|--------|--------|--------|------|
-| 商品详情 · 缓存失效（修复前） | 64 | 99 | 642 ms | 1139 ms | 0% | 每请求都走 Redisson 锁 + DB，见下方复盘 |
+| 商品详情 · 缓存 bug 态（修复前） | 64 | 99 | 642 ms | 1139 ms | 0% | 命中率 0 + 每请求 2.4 次加锁，属故障态而非「无缓存基线」 |
 | 商品详情 · 冷缓存（修复后） | 64 | 1618 | 39.5 ms | 576 ms | 0% | 1000 条商品随机 id，首访回源 |
 | 商品详情 · 热缓存（修复后） | 64 | 2385 | 26.8 ms | 44 ms | 0% | 缓存命中，P99 较修复前降 25 倍 |
 | 秒杀下单 · 300 并发（基线） | 300 | 79 | 3718 ms | 6837 ms | 0% | 5000 用户 / 库存 5000 / 5000 单落库 / 0 超卖 |
@@ -365,13 +365,16 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 | 秒杀下单 · 200 并发（Outbox 复测） | 200 | 677 | 291 ms | 458 ms | 0% | 同上，本轮最佳 |
 | 全链路混合 | — | 未测 | — | — | — | 依赖 ES，本轮未起 |
 
+> **报数口径**：同一配置多轮在 **447~677 TPS、P99 458~2632 ms** 之间波动（同机竞争所致）。
+> 引用时建议报区间 + 说明噪声，而不是只挑最好的 677。
+
 ### 压测发现并修复的问题
 
 **1. MyBatis 用 `StdOutImpl` 打印 SQL，`System.out` 全局锁把线程串行化（P0，提升 5 倍）**
 
 `application.yml` 里 `log-impl: org.apache.ibatis.logging.stdout.StdOutImpl`，每条 SQL 都 `System.out.println`；
-线程 dump 里 200 个 Tomcat 线程有 128 个停在 `PrintStream.writeln`（MyBatis `StdOutImpl.debug`），
-剩下 72 个在等 Hikari 连接 —— 数据库其实是空的（`Slow_queries=0`），线程全在排队打日志。
+线程 dump 里 201 个 Tomcat 线程：**70 个卡在 `PrintStream.writeln`（MyBatis `StdOutImpl.debug`）且还占着数据库连接**，
+导致另外 **128 个在等 Hikari 连接**，真正在干活的只有 3 个 —— 数据库其实是空的（`Slow_queries=0`）。
 
 - 调大 Hikari 10→30→80 完全无效（79 / 89 / 88 TPS），因为序列化点是 stdout 不是 DB；
 - 关掉 StdOutImpl 后同一场景 **88 → 447 TPS**，复测 602 TPS / P99 669ms；
@@ -431,7 +434,7 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 - **高可用未验证**：Redis / MySQL / RocketMQ / Nacos 都是单实例，主从、故障转移、Sentinel 流控规则都不在本轮范围。
 
 > 一句话概括：**在这台单机上，最大的瓶颈是日志（改完 5.6 倍），继续优化的收益已被同机噪声淹没** ——
-> 这不是「系统只能做到 677 TPS」，而是「再往上测需要独立压测机」。
+> 这不是「系统只能做到 600 多 TPS」，而是「再往上测需要独立压测机」。
 > 可能的下一步（未验证）：把消费端 Feign 调用移出 `@Transactional` 减少连接占用、Tomcat 线程 200→400、
 > 网关多实例、Sentinel 限流规则落地。
 

@@ -22,12 +22,14 @@
 
 | 项 | 值 |
 |----|----|
-| 机型 / CPU 核数 / 内存 | 待填 |
-| JDK 版本 / 堆参数（`-Xms -Xmx`） | 待填 |
-| MySQL / Redis / RocketMQ / ES 版本 | 待填 |
-| Docker Desktop 资源限制（CPU / 内存） | 待填 |
-| 压测器与被测服务是否同机 | 待填（同机会互相抢 CPU，绝对值偏低，只做相对比较） |
-| Tomcat 线程数（默认 200）/ 网关实例数（默认 1） | 待填 |
+| 机型 / CPU 核数 / 内存 | ASUS TUF Gaming A15 FA507NV / 16 核 / 16 GB |
+| JDK 版本 / 堆参数（`-Xms -Xmx`） | Oracle JDK 21.0.11；被测服务压到 `-Xms128m -Xmx256m -XX:MaxMetaspaceSize=192m`（为给 Docker 留内存，非默认） |
+| MySQL / Redis / RocketMQ / ES 版本 | MySQL 8.4（本机安装）、Redis 7.0、RocketMQ 5.1.4、ES 7.17.18（本轮未启动） |
+| Docker Desktop 资源限制（CPU / 内存） | WSL2 后端，测试期临时 `.wslconfig`：`memory=3GB / swap=1GB / processors=8` |
+| 压测器与被测服务是否同机 | 是：Python 200 线程 + 4 个 JVM + Docker VM 抢同一台 16 核 16G |
+| Tomcat 线程数（默认 200）/ 网关实例数（默认 1） | 200（默认值，未调）/ 1 |
+
+> 以上是 2026-10-22 那轮实测的机器基线，与 README「压测数据」一节的说明一致。
 
 ---
 
@@ -69,12 +71,13 @@ python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --dur
 
 | 组 | QPS | Avg RT | P95 | P99 | 错误率 |
 |----|-----|--------|-----|-----|--------|
-| 缓存失效（修复前，见 §7） | 99 | 642 ms | 719 ms | 1139 ms | 0% |
+| 缓存 bug 态（修复前，见 §7） | 99 | 642 ms | 719 ms | 1139 ms | 0% |
 | 冷缓存 | 1618 | 39.5 ms | 67.8 ms | 576 ms | 0% |
 | 热缓存 | 2385 | 26.8 ms | 33.5 ms | 44 ms | 0% |
 
 冷缓存这一列不是「无缓存」：首访回源后缓存即生效，指标被前半段回源拉低，所以 P99 576ms。
-真正的「无缓存」对照是「缓存失效」那一行 —— 也是压测发现的 bug（§7）。
+真正的「无缓存」对照是「缓存 bug 态」那一行 —— 它同时命中率 0 且每请求 2.4 次加锁，
+是故障态而不是正常的无缓存基线（正常无缓存至少不该有分布式锁开销）。
 
 **判据**：热组错误率 < 0.5%，且 QPS 提升倍数稳定；如果冷热差距很小，八成是缓存没配上或 key 每次不同（先 `redis-cli MONITOR` 看有没有 `GET product:...`）。
 
@@ -115,9 +118,18 @@ Hikari 10→80 只把 P99 从 6.8s 砍到 3.2s、吞吐不动；关掉 StdOutImp
 此后把热点路径 DB 查询从 3 次降到 0 次（配置本地缓存）吞吐仍在 550~635 波动。
 下一步要往 MQ 消费端与单实例网关/客户端排队方向查，而不是继续减 SQL。
 
-两轮都是 0 错误、0 重复、5000 条订单全部落库（`SELECT COUNT(*) FROM db_seckill.t_seckill_order` = 5000）。
+**读这张表要注意三点**：
 
-**待补的并发梯度**（本轮时间只够跑两档；要画拐点曲线按下面补 500 / 1000 / 3000 / 5000 四档）：
+1. **只跑了两档并发（200 / 300），没有容量拐点曲线**。上表是同一条链路在改不同配置，不是并发梯度；
+   500 / 1000 / 3000 / 5000 四档仍是空的（见下方模板），所以不能说「找到了容量拐点」。
+2. **300 那档和 200 档不能直接对比**：300 档是旧版本（StdOutImpl 还开着、Hikari=10），
+   200 档是关日志之后的版本，混了多个变量，只能各自当作「优化前/后」的参考点。
+3. 表里没有「5000 消耗 vs 4998 成功」那轮（真实 SKU 库存耗尽导致 2 单无订单）——
+   那是 Outbox 之前的旧版本现象，已在 §7.4 的 Outbox 版本修复。
+
+每行都是 0 错误、0 重复、5000 条订单全部落库（`SELECT COUNT(*) FROM db_seckill.t_seckill_order` = 5000）。
+
+**待补的并发梯度**（本轮只够跑两档；要画拐点曲线按下面补 500 / 1000 / 3000 / 5000 四档）：
 
 | 并发 | 总请求 | 成功 | 4003 重复 | 4004 售罄 | 5xx | TPS | P99 | 超卖校验 |
 |------|--------|------|-----------|-----------|-----|-----|-----|----------|
@@ -183,7 +195,7 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 
 **现象**：Hikari 从 10 调到 80，TPS 一直卡在 79~89，P99 从 6.8s 只降到 3.2s，怎么调都没用。
 
-**定位**：对 seckill 服务连续打 4 次线程 dump（`jcmd Thread.print`），202 个 Tomcat 线程分布：
+**定位**：对 seckill 服务连续打 4 次线程 dump（`jcmd Thread.print`），取一张快照，201 个 Tomcat 线程分布：
 
 | 状态 | 线程数 | 栈顶 |
 |------|--------|------|
@@ -194,7 +206,7 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 同时 MySQL `Slow_queries=0`、`PROCESSLIST` 里连接基本空闲 —— 数据库没问题，线程全在排队打 SQL 日志。
 
 **根因**：5 个服务的 `application.yml` 都写了 `log-impl: org.apache.ibatis.logging.stdout.StdOutImpl`，
-每条 SQL 走 `System.out.println`，而 `PrintStream` 是全局同步锁，200 个线程被串行化。
+每条 SQL 走 `System.out.println`，而 `PrintStream` 是全局同步锁，Tomcat 线程池（默认 200）被整体串行化。
 
 **修复**：`log-impl` 改为 `org.apache.ibatis.logging.slf4j.Slf4jImpl`（SQL 日志交给日志框架，按级别控制）。
 
@@ -239,6 +251,7 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 
 原实现里「Redis 扣减 → `syncSend`」在同一个请求里，消息发不出去时库存已经扣了、用户还收到「排队中」。
 真实 SKU 库存耗尽的那轮压测就复现了：5000 消耗 vs 4998 成功，2 单既无订单也不回补。
+（**这是 Outbox 之前的旧版本现象**，本节下面的改法已经把这条路径补上；§4 表格里不含这一轮。）
 
 **改法（Transactional Outbox）**：
 1. 请求线程只做 Redis 扣减 + 写 `t_seckill_outbox`（`status=0`），立即返回「排队中」；
