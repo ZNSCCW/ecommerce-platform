@@ -57,20 +57,24 @@ python tools/loadtest/seckill_bench.py --users 5000 --pool demo --bootstrap-only
 **协议**（每组 3 轮取中位数，避免一轮定生死）：
 
 ```powershell
-# 冷缓存：每轮前清库
+# 冷缓存：每轮前清库（注意 spu 范围要和 seed-products.sql 灌的 id 对齐）
 docker exec ecommerce-redis redis-cli FLUSHDB
-python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30 --cold-cache
+python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30 --cold-cache --spu-min 2001 --spu-max 3000
 
 # 热缓存：热身 200 次后再计时
-python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30
+python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30 --spu-min 2001 --spu-max 3000
 ```
 
-**记录**：
+**实测（2026-10-22，64 线程，1000 条商品随机 id）**：
 
-| 组 | 轮次 | QPS | Avg RT | P99 | 错误率 |
-|----|------|-----|--------|-----|--------|
-| 冷缓存 | 1/2/3 | | | | |
-| 热缓存 | 1/2/3 | | | | |
+| 组 | QPS | Avg RT | P95 | P99 | 错误率 |
+|----|-----|--------|-----|-----|--------|
+| 缓存失效（修复前，见 §7） | 99 | 642 ms | 719 ms | 1139 ms | 0% |
+| 冷缓存 | 1618 | 39.5 ms | 67.8 ms | 576 ms | 0% |
+| 热缓存 | 2385 | 26.8 ms | 33.5 ms | 44 ms | 0% |
+
+冷缓存这一列不是「无缓存」：首访回源后缓存即生效，指标被前半段回源拉低，所以 P99 576ms。
+真正的「无缓存」对照是「缓存失效」那一行 —— 也是压测发现的 bug（§7）。
 
 **判据**：热组错误率 < 0.5%，且 QPS 提升倍数稳定；如果冷热差距很小，八成是缓存没配上或 key 每次不同（先 `redis-cli MONITOR` 看有没有 `GET product:...`）。
 
@@ -90,7 +94,16 @@ mysql -uroot -p123456 < tools/loadtest/sql/reset-seckill.sql
 python tools/loadtest/seckill_bench.py --scenario seckill --users 1000 --concurrency 300 --pool demo --reuse --stock 1000
 ```
 
-**记录**（直接抄 `summary.md`）：
+**实测（2026-10-22，5000 用户 / 库存 5000，单机）**：
+
+| 并发 | 总请求 | 成功 | 4003 重复 | 5xx | TPS | Avg RT | P99 | 超卖校验 |
+|------|--------|------|-----------|-----|-----|--------|-----|----------|
+| 300（Hikari=10） | 5000 | 5000 | 0 | 0 | 79.3 | 3718 ms | 6837 ms | ✅ 5000 = 库存消耗 |
+| 200（Hikari=30） | 5000 | 5000 | 0 | 0 | 89.0 | 2235 ms | 3579 ms | ✅ 5000 = 库存消耗 |
+
+两轮都是 0 错误、0 重复、5000 条订单全部落库（`SELECT COUNT(*) FROM db_seckill.t_seckill_order` = 5000）。
+
+**待补的并发梯度**（本轮时间只够跑两档；要画拐点曲线按下面补 500 / 1000 / 3000 / 5000 四档）：
 
 | 并发 | 总请求 | 成功 | 4003 重复 | 4004 售罄 | 5xx | TPS | P99 | 超卖校验 |
 |------|--------|------|-----------|-----------|-----|-----|-----|----------|
@@ -134,21 +147,40 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 
 ---
 
-## 6. 结果记录模板
+## 6. 结果记录
 
-`summary.md` 已自动生成下面这行，复制到 README「压测数据」表即可：
+本轮实测数据已落到 `README.md` 的「压测数据」表，原始报告在 `tools/loadtest/results/<时间戳>-<场景>/summary.json`。
+
+再跑新场景时，`summary.md` 末尾会自动生成这样的行，直接抄进 README：
 
 ```markdown
 | 场景 | 并发 | QPS | P99 RT | 错误率 | 备注 |
 |------|------|-----|--------|--------|------|
-| 秒杀下单（MQ 削峰） | 1000 | 待实测 | 待实测 | 待实测 | 本机单实例，同机压测 |
+| 秒杀下单（MQ 削峰） | 200 | 89.0 | 3579 ms | 0% | 5000 用户 / 5000 单落库 / 0 超卖 |
 ```
 
 填表前再确认一次：这行数字对应的 `summary.json` 里 `4003 = 0`、`oversold = false`。
 
 ---
 
-## 7. 已知瓶颈与优化预判（读源码得出，压测时逐条验证）
+## 7. 压测发现的问题 & 已知瓶颈（读源码得出，压测时逐条验证）
+
+### 7.1 已修复：商品详情缓存从未命中（P0，2026-10-22 实测发现）
+
+**现象**：冷缓存 102.7 QPS / 热缓存 99.1 QPS，几乎没差；8 线程也只有 104 QPS。
+
+**定位**：压 10s / 1051 请求，Redis `INFO commandstats` 增量：`EVAL`（Redisson 加锁脚本）+2520、`SET` +1252、`GET` +3756
+→ **每请求 2.4 次加锁**，说明全部走的是「缓存未命中 → 分布式锁 → 查库」路径。
+
+**根因**：`common/RedisConfig` 用 `Jackson2JsonRedisSerializer<Object>`（不带类型信息），
+`ProductCacheService.getSpuCache` 读出的是 `String`/`LinkedHashMap`，`instanceof SpuVO` 永远 false，
+于是删缓存 → 加锁 → 回源，缓存命中率恒为 0。
+
+**修复**：`getSpuCache` 对 `String`/`Map` 用 Hutool 反序列化兜底；顺手确认 `setSpuCache` 写入格式一致。
+
+**效果**：同 8 线程 104 → 449 QPS；64 线程热缓存 2385 QPS、P99 44ms（修复前 99 QPS / P99 1139ms）。
+
+### 7.2 秒杀链路的瓶颈（实测数据支持）
 
 | # | 瓶颈 | 代码位置 | 验证方法 | 可能的优化 |
 |---|------|---------|---------|-----------|
@@ -156,9 +188,11 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 | 2 | `syncSend` 在请求线程里同步等 MQ 回执 | `SeckillService` 步骤 7 | MQ Dashboard 堆积上升时 RT 同步上升 | 改 `asyncSend` + 本地失败重试表 |
 | 3 | Redisson `tryLock` 每请求一次往返，同 key 竞争 | 步骤 3 | 并发越高，`seckill:lock` 争抢越明显 | 限购已由 Lua 保证，锁可退化为 `SETNX` 短 TTL |
 | 4 | 单实例网关 + Tomcat 默认 200 线程 | gateway | 并发 > 300 后 P99 陡增、TPS 不再涨 | 加实例 / 调 `server.tomcat.threads.max` |
-| 5 | 秒杀链路的 `@RequestAttribute` + Security 过滤器链开销 | `JwtAuthFilter` | 对比直连 8084 与走 8080 的 RT 差 | 网关统一鉴权，下游服务内网直连免鉴权 |
+| 5 | 秒杀链路的 `@SecurityContext` + 过滤器链开销 | `JwtAuthFilter` | 对比直连 8084 与走 8080 的 RT 差 | 网关统一鉴权，下游服务内网直连免鉴权 |
 
-> 面试里说「瓶颈在 DB 的配置查询」比说「TPS 3000」值钱得多 —— 前者证明你真的看过链路。
+**实测结论**：300 并发（Hikari=10）79 TPS / P99 6.8s；把 Hikari 调到 30、并发降到 200，
+89 TPS / P99 3.6s —— **调连接池只能把 P99 砍半，吞吐几乎不动**，说明瓶颈在同步调用链（第 1/2/3 条），
+不在连接池。下一步要动的是：活动/商品配置本地缓存 + MQ 改异步发送。
 
 ---
 

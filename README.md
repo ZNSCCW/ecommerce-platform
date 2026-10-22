@@ -344,19 +344,32 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 
 ## 压测数据
 
-> 压测工具：`tools/loadtest/seckill_bench.py`（零依赖 Python，场景/并发可参数化，自带超卖校验）
-> ⚠️ **数据待实测填充**——目前未发现有效压测记录，请勿在简历中引用未实测的 QPS 数字。
->
-> 旧方案（JMeter + 同一 token 打 5000 并发 + 库存 10）跑不出有效数据，三个设计缺陷见 `docs/benchmark.md` 第 0 节；
-> 执行步骤见 `tools/loadtest/README.md`。
+> 工具：`tools/loadtest/seckill_bench.py`（零依赖 Python，每请求独立用户、自校验超卖）。
+> 环境：单机 ASUS TUF FA507NV / Win11 / 16 核 16G / Docker VM 3G / 压测器与被测服务同机。
+> 绝对值受同机抢 CPU 与 Docker 资源上限影响，**看相对提升与拐点，不看绝对值**。
 
-| 场景 | 并发数 | QPS | P99 RT | 错误率 |
-|------|--------|-----|--------|--------|
-| 商品详情（无缓存） | 500 | 待实测 | 待实测 | 待实测 |
-| 商品详情（有缓存） | 500 | — | — | — |
-| 秒杀下单（无 MQ 削峰） | 1000 | — | — | — |
-| 秒杀下单（MQ 削峰） | 5000 | — | — | — |
-| 全链路混合压测 | 2000 | — | — | — |
+| 场景 | 并发 | QPS | Avg RT | P99 RT | 错误率 | 备注 |
+|------|------|-----|--------|--------|--------|------|
+| 商品详情 · 缓存失效（修复前） | 64 | 99 | 642 ms | 1139 ms | 0% | 每请求都走 Redisson 锁 + DB，见下方复盘 |
+| 商品详情 · 冷缓存（修复后） | 64 | 1618 | 39.5 ms | 576 ms | 0% | 1000 条商品随机 id，首访回源 |
+| 商品详情 · 热缓存（修复后） | 64 | 2385 | 26.8 ms | 44 ms | 0% | 缓存命中，P99 较修复前降 25 倍 |
+| 秒杀下单 · 300 并发（Hikari=10） | 300 | 79 | 3718 ms | 6837 ms | 0% | 5000 用户 / 库存 5000 / 5000 单落库 / 0 超卖 |
+| 秒杀下单 · 200 并发（Hikari=30） | 200 | 89 | 2235 ms | 3579 ms | 0% | 同上；连接池调大后 P99 减半，吞吐仍卡在 ~90 |
+| 全链路混合 | — | 未测 | — | — | — | 依赖 ES，本轮未起 |
+
+### 压测发现并修复的问题
+
+**商品详情缓存从未命中**（P0，2026-10-22 压测发现）：`RedisConfig` 用 `Jackson2JsonRedisSerializer<Object>`，写入是 JSON、读出是 `String`/`LinkedHashMap`，
+`ProductCacheService.getSpuCache` 里 `instanceof SpuVO` 永远不成立，于是每个请求都「判定脏数据 → 删缓存 → 加分布式锁 → 查库」。
+
+- 证据：压测 10s/1051 请求，Redis `EVAL`（Redisson 锁）增加 2520 次、`SET` 增加 1252 次，即**每请求 2.4 次加锁脚本**；
+- 修复：`getSpuCache` 对 `String` / `Map` 做反序列化兜底；
+- 效果：同 8 线程 QPS 104 → 449，64 线程热缓存 2385 QPS、P99 44ms。
+
+**秒杀链路瓶颈**：每请求 3 次 DB 查询（活动、秒杀商品、`count(*)`）+ Redisson 加锁 + `syncSend` 同步等 MQ 回执。
+调大 Hikari（10→30）只把 P99 从 6.8s 降到 3.6s，吞吐仍 ~90 TPS，说明瓶颈不在连接池，而在同步调用链本身。
+
+> 复现：`docs/benchmark.md` §4；原始报告在 `tools/loadtest/results/`（已 gitignore）。
 
 ---
 

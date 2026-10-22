@@ -88,13 +88,14 @@ python tools/loadtest/seckill_bench.py --scenario seckill --users 5000 --concurr
 ```powershell
 # 灌 1000 条商品（init.sql 只有 1 条，只压 1 个 id 会把缓存收益放大）
 mysql -uroot -p123456 < tools/loadtest/sql/seed-products.sql
+# 灌入的 id 是 2001~3000，压测时要显式指定范围（默认 1~1000 会全是 2001 商品不存在）
 
 # 冷缓存组：先清缓存再压（⚠️ FLUSHDB 会连秒杀库存一起清，压完记得重新预热）
 docker exec ecommerce-redis redis-cli FLUSHDB
-python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30 --cold-cache
+python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30 --cold-cache --spu-min 2001 --spu-max 3000
 
 # 热缓存组：同一个脚本，热身 200 次后再计时
-python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30
+python tools/loadtest/seckill_bench.py --scenario product --concurrency 64 --duration 30 --spu-min 2001 --spu-max 3000
 ```
 
 两组各跑 3 轮，取中位数，别拿一次结果下结论。
@@ -136,3 +137,5 @@ python tools/loadtest/seckill_bench.py --scenario mixed --concurrency 200 --dura
 这套工具跑出来的数字可以直接说「实测」，因为报告里带了时间、并发、错误分布和超卖校验。
 如果某轮没跑成（环境没起、数据没备），**宁可不报数字**，也不要拿 `docs/benchmark.md` 里的
 “预期结果”当实测讲 —— 面试官追问一句“P99 多少、当时什么机型和并发”就穿帮了。
+
+
