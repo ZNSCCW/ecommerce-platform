@@ -344,8 +344,11 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 
 ## 压测数据
 
-> 压测工具：Apache JMeter
-> ⚠️ 压测方案已设计（见 `docs/benchmark.md`），**数据待在实际环境执行后填充**——目前未运行压测，请勿在简历中引用未实测的 QPS 数字。
+> 压测工具：`tools/loadtest/seckill_bench.py`（零依赖 Python，场景/并发可参数化，自带超卖校验）
+> ⚠️ **数据待实测填充**——目前未发现有效压测记录，请勿在简历中引用未实测的 QPS 数字。
+>
+> 旧方案（JMeter + 同一 token 打 5000 并发 + 库存 10）跑不出有效数据，三个设计缺陷见 `docs/benchmark.md` 第 0 节；
+> 执行步骤见 `tools/loadtest/README.md`。
 
 | 场景 | 并发数 | QPS | P99 RT | 错误率 |
 |------|--------|-----|--------|--------|
@@ -365,7 +368,12 @@ ecommerce-platform/
 ├── pom.xml                      # Maven 父工程
 ├── docs/
 │   ├── init.sql                 # 全量建库建表脚本
-│   └── benchmark.md             # 压测方案
+│   ├── testing.md               # 功能测试流程
+│   └── benchmark.md             # 压测方案（含失效方案复盘）
+├── tools/loadtest/              # 压测工具（零依赖 Python）
+│   ├── seckill_bench.py         # 秒杀/商品/混合流量压测器
+│   ├── README.md                # 执行手册
+│   └── sql/                     # 压测数据准备（重置库存、灌 1000 条商品）
 ├── common/                      # 公共模块
 ├── gateway/                     # 网关
 ├── ecommerce-admin/             # Spring Boot Admin 监控
