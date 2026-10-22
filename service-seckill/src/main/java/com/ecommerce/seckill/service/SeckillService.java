@@ -20,6 +20,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
@@ -68,9 +69,12 @@ public class SeckillService {
     /** 分布式锁前缀（必须与 ORDERED_PREFIX 不同！否则 tryLock 创建的锁会被 hasKey 误判为已下单） */
     private static final String LOCK_PREFIX = "seckill:lock:";
 
+    /** 是否启用每用户分布式锁（一人一单已由 Lua 的限购 key 原子保证，可用 -Dseckill.lock.enabled=false 关闭做压测对比） */
+    @Value("${seckill.lock.enabled:true}")
+    private boolean lockEnabled;
+
     @PostConstruct
-    public void init() {
-        // 加载 Lua 脚本
+    public void init() {        // 加载 Lua 脚本
         stockLuaScript = new DefaultRedisScript<>();
         stockLuaScript.setLocation(new ClassPathResource("lua/seckill_stock.lua"));
         stockLuaScript.setResultType(Long.class);
@@ -132,18 +136,23 @@ public class SeckillService {
 
         // 3. 分布式锁：防止同一个用户重复提交（key 粒度 = 用户 + 活动 + SKU）
         // 注意 lockKey 前缀必须与 orderedKey 不同，否则锁 key 会被下面的 hasKey 误判为已下单
+        // 每请求一次 tryLock + 一次 unlock = 至少两次 Redis 往返，压测中是仅次于日志的瓶颈；
+        // 一人一单其实已由 Lua 的 KEYS[2] 限购 key 原子保证，可用 seckill.lock.enabled=false 关掉做对比。
         String lockKey = LOCK_PREFIX + activityId + ":" + skuId + ":" + userId;
-        RLock lock = redissonClient.getLock(lockKey);
-        try {
-            if (!lock.tryLock(0, 5, TimeUnit.SECONDS)) {
-                // 没拿到锁说明正在处理，视为重复
-                log.warn("[seckill] REPEAT@tryLock: lockKey={}", lockKey);
+        RLock lock = null;
+        if (lockEnabled) {
+            lock = redissonClient.getLock(lockKey);
+            try {
+                if (!lock.tryLock(0, 5, TimeUnit.SECONDS)) {
+                    // 没拿到锁说明正在处理，视为重复
+                    log.warn("[seckill] REPEAT@tryLock: lockKey={}", lockKey);
+                    throw new BusinessException(ResultCode.SECKILL_REPEAT);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("[seckill] REPEAT@Interrupted: lockKey={}", lockKey);
                 throw new BusinessException(ResultCode.SECKILL_REPEAT);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("[seckill] REPEAT@Interrupted: lockKey={}", lockKey);
-            throw new BusinessException(ResultCode.SECKILL_REPEAT);
         }
 
         try {
@@ -197,7 +206,9 @@ public class SeckillService {
                     .build();
 
         } finally {
-            lock.unlock();
+            if (lock != null && lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
