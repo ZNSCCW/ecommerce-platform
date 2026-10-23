@@ -392,6 +392,8 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 低并发吻合得很好，**高并发差约 4–5%**，大概率来自 600 个 Python 线程的客户端调度与统计窗口，
 不影响「容量约 1.2k」的结论。
 
+> **工具可信度**：与 JMeter 5.6.3 在同机、同数据、同参数下对照，量级一致（中位数 584 vs 715 TPS，差 10~20%），docs/benchmark.md §8.1 有完整表格与两个踩坑记录。
+
 > **一次未能定因的失败**：最初按「N 用户 = N 线程」跑 500 并发，出现 36–40 个 HTTP 500。
 > 特征：响应体是 Spring 默认错误页（无业务 `code`）、客户端无网络异常记录、库存未被扣减，
 > 网关日志为 `Connection refused: getsockopt` —— 请求死在「网关 → 秒杀服务」建连阶段，不是业务逻辑。
