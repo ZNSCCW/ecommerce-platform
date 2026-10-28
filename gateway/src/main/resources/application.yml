@@ -20,7 +20,8 @@ spring:
         ip: 127.0.0.1
     sentinel:
       transport:
-        dashboard: localhost:8080
+        # dashboard 未部署，端口预留；注意别填 8080——那是网关自己的端口
+        dashboard: localhost:8858
 
     gateway:
       routes:
@@ -76,8 +77,11 @@ gateway:
       - "POST /api/user/login"
       - "POST /api/user/register"
       - "POST /api/user/refresh"
-      # 商品：只读接口匿名可访问（GET 全部放行，写操作仍需登录）
-      - "GET /api/product/**"
+      # 商品：只放行前台只读接口（注意不要用 /api/product/**，否则 /internal/** 会被匿名放行）
+      - "GET /api/product/spu/page"
+      - "GET /api/product/spu/*"
+      - "GET /api/product/sku/spu/*"
+      - "GET /api/product/category/**"
       - "POST /api/product/search"
       # 秒杀：看活动、看实时库存匿名可访问；下单 / 预热需要登录
       - "GET /api/seckill/activities"

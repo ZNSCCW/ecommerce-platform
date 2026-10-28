@@ -24,7 +24,8 @@ spring:
         ip: 127.0.0.1
     sentinel:
       transport:
-        dashboard: localhost:8080
+        # dashboard 未部署，端口预留；注意别填 8080——那是网关的端口
+        dashboard: localhost:8858
 
 server:
   port: 8082
