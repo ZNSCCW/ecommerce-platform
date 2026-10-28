@@ -1,7 +1,10 @@
 # 功能测试流程
 
 > 所有请求通过 Gateway（`http://localhost:8080`）。  
-> 所有 curl 命令均写在一行，可直接复制到 CMD 执行。
+> 所有 curl 命令均写在一行，可直接复制到 CMD 执行。  
+> 2026-10 起网关加了统一鉴权：白名单之外的接口没带有效 token 会被**网关**直接 401，
+> 不会再转发到服务。网关的 401 文案是 `未登录 / Token无效 / Token已失效`，
+> 服务侧 JwtAuthFilter 的文案是 `未登录或Token已过期`——排查时先看是哪一个。
 
 测试前确保：
 - 中间件已启动：`docker compose up -d`
@@ -10,7 +13,71 @@
 
 ---
 
-## 1. 注册与登录
+## 1. 网关统一鉴权（先跑这个）
+
+> 网关白名单见 `gateway/src/main/resources/application.yml` 的 `gateway.auth.whitelist`。
+> 白名单里只有：注册/登录/刷新、商品前台只读、秒杀活动与库存查询、支付回调、actuator。
+> `/api/product/internal/**` 故意不在白名单——内部接口只给服务间 Feign 直连用。
+
+### 1.1 白名单接口匿名可访问 → 200
+
+```cmd
+curl -s "http://localhost:8080/api/product/spu/page?page=1&size=1"
+```
+返回商品 JSON（`code:200`），不是 401。
+
+```cmd
+curl -s http://localhost:8080/api/seckill/activities
+```
+
+### 1.2 受保护接口不带 token → 401（网关拦截）
+
+```cmd
+curl -s http://localhost:8080/api/user/info
+```
+返回 `{"code":401,"msg":"未登录","data":null}`。
+
+```cmd
+curl -s -X POST http://localhost:8080/api/seckill -H "Content-Type: application/json" -d "{\"activityId\":1,\"skuId\":1}"
+```
+返回 `{"code":401,"msg":"未登录","data":null}`。
+
+### 1.3 内部接口不会被匿名放行 → 401
+
+```cmd
+curl -s http://localhost:8080/api/product/internal/sku/1
+```
+
+### 1.4 refresh token 不能当 access 用 → 401
+
+用登录返回的 `refreshToken` 当 access token 请求：
+
+```cmd
+curl -s http://localhost:8080/api/user/info -H "Authorization: Bearer <refreshToken>"
+```
+返回 `{"code":401,"msg":"Token无效",...}`——网关额外校验了 `type=access`，否则 7 天的 refresh 等于把会话有效期放大 14 倍。
+
+### 1.5 登出后 token 立即失效（Redis 黑名单）
+
+```cmd
+curl -s -X POST http://localhost:8080/api/user/logout -H "Authorization: Bearer <accessToken>" -H "Content-Type: application/json" -d "{\"refreshToken\":\"<refreshToken>\"}"
+```
+
+```cmd
+curl -s http://localhost:8080/api/user/info -H "Authorization: Bearer <accessToken>"
+```
+返回 `{"code":401,"msg":"Token已失效",...}`。
+
+### 1.6 伪造 X-User-Id 无效
+
+```cmd
+curl -s http://localhost:8080/api/user/info -H "Authorization: Bearer <accessToken>" -H "X-User-Id: 999"
+```
+返回的仍是 token 对应的用户——网关会先删掉客户端自带的 `X-User-Id`，再写入验签得到的 userId。
+
+---
+
+## 2. 注册与登录
 
 ```bash
 curl -s -X POST http://localhost:8080/api/user/register -H "Content-Type: application/json" -d "{\"username\":\"alice\",\"password\":\"123456\"}"
@@ -45,7 +112,7 @@ curl -s -X POST http://localhost:8080/api/user/refresh -H "Content-Type: applica
 
 ---
 
-## 2. 商品浏览
+## 3. 商品浏览
 
 ```bash
 curl -s "http://localhost:8080/api/product/spu/page?page=1&size=10"
@@ -71,7 +138,7 @@ curl -s -X POST http://localhost:8080/api/product/search -H "Content-Type: appli
 
 ---
 
-## 3. 订单流程
+## 4. 订单流程
 
 ### 创建订单（记为订单 A）
 
@@ -129,7 +196,7 @@ curl -s -X POST "http://localhost:8080/api/payment/notify" -H "Content-Type: app
 
 ---
 
-## 4. 秒杀测试
+## 5. 秒杀测试
 
 ### 准备数据
 
@@ -141,7 +208,7 @@ SET status = 1,
     end_time = DATE_ADD(NOW(), INTERVAL 1 DAY)
 WHERE id = 1;
 
-UPDATE db_seckill.t_seckill_product SET seckill_stock = 10 WHERE id = 1;
+UPDATE db_seckill.t_seckill_product SET seckill_stock = 10 WHERE activity_id = 1 AND sku_id = 1;
 ```
 
 ### 预热库存
@@ -149,7 +216,7 @@ UPDATE db_seckill.t_seckill_product SET seckill_stock = 10 WHERE id = 1;
 > ⚠️ warm-up 接口限 ADMIN/SUPER_ADMIN（防任意用户刷满库存），**必须用管理员账号登录**拿 token：
 
 ```bash
-curl -s -X POST http://localhost:8080/api/user/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"<DEFAULT_ADMIN_PASSWORD>\"}"
+curl -s -X POST http://localhost:8080/api/user/login -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"admin123\"}"
 ```
 
 ```bash
@@ -206,7 +273,7 @@ DELETE FROM db_payment.t_pay_record;
 
 ---
 
-## 5. 监控面板
+## 6. 监控面板
 
 | 地址 | 账号 | 用途 |
 |------|------|------|
@@ -222,6 +289,8 @@ DELETE FROM db_payment.t_pay_record;
 | 现象 | 原因 | 解决 |
 |------|------|------|
 | 401 未登录 | Token 过期或未传 | 重新登录，检查 `Authorization: Bearer {token}` 格式 |
+| 401 `未登录`（msg 只有三个字） | 被网关拦截：接口不在白名单、或没带 token | 带 token；确认接口是否该匿名访问，要放行就加进 `gateway.auth.whitelist` |
+| 401 `未登录或Token已过期` | 请求到了服务，是服务侧 JwtAuthFilter 拒的 | 重新登录；检查 token 是否已登出进黑名单 |
 | 503 Service Unavailable | Nacos 未启动或服务未注册 | `docker compose ps` 检查 Nacos，等服务注册完成 |
 | 500 服务器内部错误 | MySQL 连不上或表未建 | 检查 MySQL 服务，运行 `init.sql` |
 | 秒杀返回排队中但无订单 | RocketMQ 消费者未处理 | 检查 RocketMQ Dashboard 是否有消息堆积 |

@@ -25,7 +25,7 @@
 graph TB
     Client[用户/前端] --> Gateway[Gateway 网关 :8080]
     
-    subgraph 注册中心/配置中心
+    subgraph 注册中心
         Nacos[Nacos Server :8848]
     end
     
@@ -86,7 +86,7 @@ graph TB
 | 框架 | Spring Boot | 3.2.5 |
 | JDK | Oracle JDK | 17+ |
 | 微服务 | Spring Cloud Alibaba | 2023.0.1 |
-| 注册/配置中心 | Nacos | 2.3.0 |
+| 注册中心 | Nacos | 2.3.0（只用 discovery，未接配置中心） |
 | 网关 | Spring Cloud Gateway | — |
 | ORM | MyBatis-Plus | 3.5.5 |
 | 数据库 | MySQL | 8.0 |
@@ -289,7 +289,7 @@ OPTIONS / 白名单              → 直接放行
         → 失败：直接 401 {"code":401,"msg":"未登录 | Token无效 | Token已失效"}
 ```
 
-- **白名单集中在 `gateway.auth.whitelist`**（格式 `METHOD /ant/path`）：注册/登录/刷新、商品只读、秒杀活动与库存查询、支付回调、`actuator`；
+- **白名单集中在 `gateway.auth.whitelist`**（格式 `METHOD /ant/path`）：注册/登录/刷新、商品前台只读（spu 列表/详情、sku 列表、分类树、搜索）、秒杀活动与库存查询、支付回调、`actuator`；`/api/product/internal/**` 故意不放进去——内部接口只给服务间 Feign 直连用；
 - **为什么不复用 `common` 的 `JwtUtil`**：common 是 Servlet 栈（starter-web + MyBatis-Plus）的聚合模块，网关是 WebFlux，引入后会直接报 *Spring MVC found on classpath*；所以网关只保留验签那段，密钥来源与 common 保持一致（`JWT_SECRET` 环境变量 → `jwt.secret` → 开发默认值）；
 - **额外校验 `type=access`**：refresh token 有效期 7 天，如果允许它当 access 用，等于把会话有效期放大 14 倍；
 - **服务侧 `JwtAuthFilter` 保留不动**，形成「网关入口认证 + 服务侧防御性校验」双保险：网关收敛入口、集中维护白名单，服务侧防内网直连绕过网关；
