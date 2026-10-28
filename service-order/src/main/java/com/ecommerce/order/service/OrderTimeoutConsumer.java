@@ -35,7 +35,10 @@ public class OrderTimeoutConsumer implements RocketMQListener<String> {
             orderService.cancelExpired(orderId);
             log.info("超时订单已取消: orderId={}", orderId);
         } catch (Exception e) {
-            log.error("超时取消订单失败: orderId={}", orderId, e);
+            // 抛出去让 RocketMQ 重投：吞掉异常的话订单会永远停在「待支付」，库存也不会回滚。
+            // 重试 16 次仍失败会进死信队列（%DLQ%order-cancel-consumer-group），需要单独告警。
+            log.error("超时取消订单失败，等待 MQ 重投: orderId={}", orderId, e);
+            throw new RuntimeException("超时取消订单失败: orderId=" + orderId, e);
         }
     }
 }

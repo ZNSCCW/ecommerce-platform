@@ -6,6 +6,13 @@ spring:
       client:
         url: http://localhost:8090
 
+  # 网关鉴权要查 token 黑名单（与 service-user 的 AuthService 用同一个 Redis）
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 2s
+
   cloud:
     nacos:
       discovery:
@@ -57,3 +64,26 @@ spring:
 
 server:
   port: 8080
+
+# 网关统一鉴权：白名单之外的请求必须带有效 access token，且不在 Redis 黑名单里。
+# 各服务自己的 JwtAuthFilter 保留，形成「网关入口认证 + 服务侧防御性校验」双保险。
+gateway:
+  auth:
+    enabled: true
+    blacklist-prefix: "token:blacklist:"
+    whitelist:
+      # 用户：注册 / 登录 / 刷新 token
+      - "POST /api/user/login"
+      - "POST /api/user/register"
+      - "POST /api/user/refresh"
+      # 商品：只读接口匿名可访问（GET 全部放行，写操作仍需登录）
+      - "GET /api/product/**"
+      - "POST /api/product/search"
+      # 秒杀：看活动、看实时库存匿名可访问；下单 / 预热需要登录
+      - "GET /api/seckill/activities"
+      - "GET /api/seckill/stock/**"
+      # 支付：支付宝异步回调不带用户 token，靠 HMAC 验签防伪造
+      - "POST /api/payment/notify"
+      # 网关自身健康检查
+      - "GET /actuator/**"
+

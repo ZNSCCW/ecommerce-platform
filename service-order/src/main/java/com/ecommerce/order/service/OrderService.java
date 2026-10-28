@@ -244,10 +244,10 @@ public class OrderService {
     // ==================== 超时取消（RocketMQ 消费者调用） ====================
 
     @Transactional
-    public void doCancelExpiredDb(Long orderId) {
+    public boolean doCancelExpiredDb(Long orderId) {
         Order order = orderMapper.selectById(orderId);
         if (order == null || order.getStatus() != 0) {
-            return;
+            return false;
         }
         updateStatus(orderId, 4);
         Order update = new Order();
@@ -255,10 +255,16 @@ public class OrderService {
         update.setCancelReason("支付超时，系统自动取消");
         update.setCancelTime(LocalDateTime.now());
         orderMapper.updateById(update);
+        return true;
     }
 
     public void cancelExpired(Long orderId) {
-        doCancelExpiredDb(orderId);
+        // 只有真正把状态从「待支付」改成「已取消」才回滚库存。
+        // 否则已支付/已取消/不存在的订单再走一遍 restoreStock，会把库存越加越多。
+        if (!doCancelExpiredDb(orderId)) {
+            log.debug("超时取消跳过（订单不存在或状态已变更）: orderId={}", orderId);
+            return;
+        }
 
         List<OrderItem> items = orderItemMapper.findByOrderId(orderId);
         for (OrderItem item : items) {

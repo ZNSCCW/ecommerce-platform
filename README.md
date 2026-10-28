@@ -105,7 +105,7 @@ graph TB
 
 | 模块 | 端口 | 说明 |
 |------|------|------|
-| `gateway` | 8080 | 统一网关，路由转发、跨域、鉴权 |
+| `gateway` | 8080 | 统一网关：路由转发、跨域、统一鉴权（白名单 + JWT 验签 + Redis 黑名单，失败直接 401） |
 | `common` | — | 公共模块：响应体、异常、JWT 工具、配置 |
 | `ecommerce-admin` | 8090 | Spring Boot Admin 监控面板 |
 | `service-user` | 8081 | 用户服务：注册/登录/JWT/RBAC 权限 |
@@ -277,6 +277,24 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
   └──→ 已取消（用户主动 / 30分钟超时自动）
 ```
 
+### 网关统一鉴权（2026-10 新增）
+
+请求进网关先过 `GatewayAuthFilter`（`GlobalFilter`，`HIGHEST_PRECEDENCE + 10`）：
+
+```
+OPTIONS / 白名单              → 直接放行
+其余请求 → 取 Bearer Token → 验签 + 校验 type=access
+        → Redis 查 token 黑名单（ReactiveStringRedisTemplate，不阻塞事件循环）
+        → 通过：删掉客户端自带的 X-User-Id，写入验签得到的 userId 再转发
+        → 失败：直接 401 {"code":401,"msg":"未登录 | Token无效 | Token已失效"}
+```
+
+- **白名单集中在 `gateway.auth.whitelist`**（格式 `METHOD /ant/path`）：注册/登录/刷新、商品只读、秒杀活动与库存查询、支付回调、`actuator`；
+- **为什么不复用 `common` 的 `JwtUtil`**：common 是 Servlet 栈（starter-web + MyBatis-Plus）的聚合模块，网关是 WebFlux，引入后会直接报 *Spring MVC found on classpath*；所以网关只保留验签那段，密钥来源与 common 保持一致（`JWT_SECRET` 环境变量 → `jwt.secret` → 开发默认值）；
+- **额外校验 `type=access`**：refresh token 有效期 7 天，如果允许它当 access 用，等于把会话有效期放大 14 倍；
+- **服务侧 `JwtAuthFilter` 保留不动**，形成「网关入口认证 + 服务侧防御性校验」双保险：网关收敛入口、集中维护白名单，服务侧防内网直连绕过网关；
+- 代价：每请求多一次 Redis `EXISTS`（黑名单）。200 并发实测吞吐差约 3%，在噪声范围内（见下方压测数据）。
+
 ---
 
 ## 实测验证
@@ -292,6 +310,7 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 | 5 | 支付（createPay + 回调验签） | ✅ HMAC 验签通过，订单 → 已支付 |
 | 6 | 秒杀预热（管理员） | ✅ ADMIN 权限校验 |
 | 7 | 秒杀 | ✅ Lua 扣库存 → MQ 削峰 → 异步建单 |
+| 8 | 网关统一鉴权（2026-10-28） | ✅ 白名单放行 / 缺 token 401 / refresh 冒充 access 401 / 登出后黑名单立即生效 |
 
 完整测试流程见 `docs/testing.md`。
 
@@ -339,6 +358,16 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 - **RocketMQ broker 假 NPE**：Docker Desktop named volume 属主为 root，broker 无写权限 → store 初始化失败，异常被 shutdown 的 NPE 掩盖。
 - **双实例**：多套服务进程并存时 Redisson 锁跨实例互斥，秒杀随机判重。
 - **localhost 解析**：Java 解析 `localhost` 可能走 IPv6 `::1`（wslrelay），排查 Redis 时需注意与 `127.0.0.1`（docker）区分。
+
+### 6. 网关想复用 common 的 JwtUtil → Servlet/WebFlux 冲突（P1）
+
+**现象**：给网关加统一鉴权时，第一反应是依赖 `common` 模块直接用 `JwtUtil`，结果网关启动失败，报 *Spring MVC found on classpath*。
+
+**根因**：`common` 的 pom 里有 `spring-boot-starter-web`（Servlet 栈）和 MyBatis-Plus，而网关跑的是 WebFlux；两者同时在 classpath 上，Spring Boot 会判定为 Servlet 应用，与 Gateway 的响应式模型冲突。
+
+**修复**：网关不依赖 `common`，只带 `jjwt` 三个包和一个 40 行的 `JwtVerifier`，密钥读取逻辑与 common 完全一致（`JWT_SECRET` 环境变量 → `jwt.secret` → 开发默认值）。顺带把 `type=access` 的校验也放在这里。
+
+**教训**：模块复用的前提是「运行模型一致」。Servlet 的公共模块不能直接给 WebFlux 用，反过来也一样。
 
 ---
 
@@ -391,6 +420,15 @@ java -jar ecommerce-platform/service-payment/target/service-payment-1.0.0.jar
 200 档 1225 vs 1214（差 0.9%）、400 档 1288 vs 1236（差 4.2%）、600 档 1302 vs 1242（差 4.8%）。
 低并发吻合得很好，**高并发差约 4–5%**，大概率来自 600 个 Python 线程的客户端调度与统计窗口，
 不影响「容量约 1.2k」的结论。
+
+> **2026-10-28 加网关统一鉴权后复测**（同一台机、同一批数据、每个请求都过网关）：
+> 200 并发 5000 用户，鉴权关闭 **1041 / 1132 TPS**，鉴权开启 **1003 / 1100 TPS**，差约 3%，在噪声范围内
+> ——代价就是每请求多一次 Redis `EXISTS`（黑名单）。
+> 同批 100/200/400/600 梯度实测 **943 / ~1050 / 954 / 965 TPS**，与上表同一量级、同样在 200 之后走平；
+> 这轮宿主可用内存只有 1G 左右、服务用 `-Xmx256m`，绝对值比上表低 10–20%，只做量级参考，不与上表混用。
+> 另一个必须记住的点：**同一配置首轮永远偏慢**（200 并发首轮只有 391–608 TPS，JIT 未预热），
+> 报数一律取预热后的第二轮。
+
 
 > **工具可信度**：与 JMeter 5.6.3 在同机、同数据、同参数下对照，量级一致（中位数 584 vs 715 TPS，差 10~20%），docs/benchmark.md §8.1 有完整表格与两个踩坑记录。
 
